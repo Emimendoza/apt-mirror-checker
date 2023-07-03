@@ -226,9 +226,9 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error("Failed to read mirror config file: " + mirror_file);
     }
 
-    volatile bool safe_mode = false;
-    volatile bool verbose = false;
-    volatile bool bad_lock = false;
+    bool safe_mode = false;
+    bool verbose = false;
+    bool bad_lock = false;
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--safe") == 0) {
             safe_mode = true;
