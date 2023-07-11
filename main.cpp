@@ -192,7 +192,7 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
     }
     std::cout << "Done: " << format_file_size(size_done) << '/' << format_file_size(size_total) <<
         " | Percent Done: " << std::setprecision(2) << (double) (size_done*100) / size_total <<"% | Good Files: " <<
-        good_files << " | Bad Files:" << bad_files << " | Percent Good: " << (double) (good_files*100) /
+        good_files << " | Bad Files: " << bad_files << " | Percent Good: " << (double) (good_files*100) /
         (good_files+bad_files) <<"%\n";
     prev_print = true;
 }
