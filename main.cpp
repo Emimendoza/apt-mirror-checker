@@ -65,9 +65,9 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return size * nmemb;
 }
 
-void check_file(const std::string& file_path, bool safe_mode, bool verbose, const std::string& repo_path,
+void check_file(const std::string& file_path, const size_t& size_total, const bool& safe_mode, const bool& verbose, const std::string& repo_path,
                 const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages,
-                int& good_files, int& bad_files, const std::string& server) {
+                int& good_files, int& bad_files,size_t& size_done, bool& prev_print, const std::string& server) {
     std::string_view relative_file(file_path);
     relative_file.remove_prefix(repo_path.length()+1);
 
@@ -89,7 +89,7 @@ void check_file(const std::string& file_path, bool safe_mode, bool verbose, cons
         throw std::runtime_error("Failed to initialize OpenSSL digest");
     }
 
-    std::array<char, BUFFER_SIZE> buffer;
+    std::array<char, BUFFER_SIZE> buffer{};
     size_t total_bytes_read = 0;
 
     while (file) {
@@ -127,14 +127,14 @@ void check_file(const std::string& file_path, bool safe_mode, bool verbose, cons
     if (file_info_iter != packages.end()) {
         const auto& file_info = file_info_iter->second;
         const std::string& expected_hash = file_info.first;
+        const size_t& file_size = file_info.second;
+        size_done += file_size;
         if (actual_hash != expected_hash) {
+            prev_print = true;
             bad_files++;
-            if (safe_mode) {
-                std::cout << "[BAD FILE] " << relative_file << " - actual hash: " << actual_hash
-                          << ", expected hash: " << expected_hash << '\n';
-            } else {
-                std::cout << "[BAD FILE] " << relative_file << " - actual hash: " << actual_hash
-                          << ", expected hash: " << expected_hash << '\n';
+            std::cout << "[BAD FILE] " << relative_file << " - actual hash: " << actual_hash << ", expected hash: "
+                << expected_hash << '\n';
+            if (!safe_mode) {
                 std::cout << "Downloading good version of " << file_path << "..." << '\n';
 
                 // Remove the existing file
@@ -184,13 +184,21 @@ void check_file(const std::string& file_path, bool safe_mode, bool verbose, cons
         }
         good_files++;
     }
+    if(verbose or prev_print){
+        prev_print = false;
+    } else {
+        std::cout << "\x1b[A";
+    }
+    std::cout << "\rDone: " << format_file_size(size_done) << '/' << format_file_size(size_total) <<
+        " | Percent Done: " << std::setprecision(2) << (double) (size_done*100) / size_total <<"% | Good Files: " <<
+        good_files << " | Bad Files:" << bad_files << " | Percent Good: " << (double) (good_files*100) /
+        (good_files+bad_files) <<"%\n";
 }
 
-void walk_directory(const std::string& directoryPath, bool safe_mode, bool verbose, const std::string& repo_path,
+void walk_directory(const std::string& directoryPath, const size_t& size_total, const bool& safe_mode, const bool& verbose, const std::string& repo_path,
                     const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages,
-                    int& good_files, int& bad_files, const std::string& server)
+                    int& good_files, int& bad_files, size_t& size_done, bool& prev_print ,const std::string& server)
 {
-
     // Process the directory
     for (const auto& entry : std::filesystem::directory_iterator(directoryPath))
     {
@@ -198,12 +206,12 @@ void walk_directory(const std::string& directoryPath, bool safe_mode, bool verbo
         if (std::filesystem::is_directory(path))
         {
             // Recursive call for subdirectories
-            walk_directory(path.string(), safe_mode, verbose, repo_path, packages, good_files, bad_files, server);
+            walk_directory(path.string(),size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files, size_done, prev_print, server);
         }
         else if (std::filesystem::is_regular_file(path))
         {
             // Process regular files
-            check_file(path.string(), safe_mode, verbose, repo_path, packages, good_files, bad_files, server);
+            check_file(path.string(),size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files,size_done,prev_print, server);
         }
     }
 }
@@ -220,6 +228,9 @@ int main(int argc, char* argv[]) {
     std::unordered_map<std::string, std::pair<std::string, size_t>> packages;
     int good_files = 0;
     int bad_files = 0;
+    size_t total_size = 0;
+    size_t size_done = 0;
+    bool prev_print = true;
 
     std::ifstream mirror_config_file(mirror_file);
     if (!mirror_config_file) {
@@ -357,13 +368,12 @@ int main(int argc, char* argv[]) {
             std::cout << "Elapsed Time: " << (int) (duration.count()/(60.0*60*1000)) << " hours " << (int) (duration.count()/(60*1000)) % 60 <<" minutes}\n";
         }
     }
-    size_t total_size = 0;
     for (const auto& package : packages) {
         total_size += package.second.second;
     }
     std::cout << "Verifying " << count << " packages (" << format_file_size(total_size) << ")..." << '\n';
     auto start_time = std::chrono::high_resolution_clock::now();
-    walk_directory(repo_path+"/pool/", safe_mode, verbose, repo_path, packages, good_files, bad_files, server);
+    walk_directory(repo_path+"/pool/", total_size,safe_mode, verbose, repo_path, packages, good_files, bad_files, size_done, prev_print, server);
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     std::cout << "Done checking repository." << '\n';
