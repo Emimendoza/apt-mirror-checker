@@ -65,9 +65,10 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return size * nmemb;
 }
 
-void check_file(const std::string& file_path, const size_t& size_total, const bool& safe_mode, const bool& verbose, const std::string& repo_path,
-                const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages,
-                int& good_files, int& bad_files,size_t& size_done, bool& prev_print, const std::string& server) {
+void check_file(const std::string &file_path, const size_t &size_total, const bool &safe_mode, const bool &verbose,
+                const std::string &repo_path,
+                const std::unordered_map<std::string, std::pair<std::string, size_t>> &packages, int &good_files,
+                int &bad_files, size_t &size_done, bool& prev_print, const std::string &server) {
     std::string_view relative_file(file_path);
     relative_file.remove_prefix(repo_path.length()+1);
 
@@ -130,9 +131,9 @@ void check_file(const std::string& file_path, const size_t& size_total, const bo
         const size_t& file_size = file_info.second;
         size_done += file_size;
         if (actual_hash != expected_hash) {
-            prev_print = true;
             bad_files++;
-            std::cout << "[BAD FILE] " << relative_file << " - actual hash: " << actual_hash << ", expected hash: "
+            prev_print = false;
+            std::cout << "\x1b[A[BAD FILE] " << relative_file << " - actual hash: " << actual_hash << ", expected hash: "
                 << expected_hash << '\n';
             if (!safe_mode) {
                 std::cout << "Downloading good version of " << file_path << "..." << '\n';
@@ -173,31 +174,32 @@ void check_file(const std::string& file_path, const size_t& size_total, const bo
                 }
             }
         } else if (verbose) {
-            std::cout << "[GOOD FILE] " << relative_file << " - hash: " << actual_hash << '\n';
+            std::cout << "\x1b[A[GOOD FILE] " << relative_file << " - hash: " << actual_hash << '\n';
+            prev_print = false;
             good_files++;
         } else {
             good_files++;
         }
     } else {
         if (verbose) {
-            std::cout << "[GHOST FILE] " << relative_file << " - hash: " << actual_hash << '\n';
+            std::cout << "\x1b[A[GHOST FILE] " << relative_file << " - hash: " << actual_hash << '\n';
+            prev_print = false;
         }
         good_files++;
     }
-    if(verbose or prev_print){
-        prev_print = false;
-    } else {
-        std::cout << "\x1b[A";
+    if (prev_print){
+        std::cout << "\x1b[A\x1b[K";
     }
-    std::cout << "\rDone: " << format_file_size(size_done) << '/' << format_file_size(size_total) <<
+    std::cout << "Done: " << format_file_size(size_done) << '/' << format_file_size(size_total) <<
         " | Percent Done: " << std::setprecision(2) << (double) (size_done*100) / size_total <<"% | Good Files: " <<
         good_files << " | Bad Files:" << bad_files << " | Percent Good: " << (double) (good_files*100) /
         (good_files+bad_files) <<"%\n";
+    prev_print = true;
 }
 
 void walk_directory(const std::string& directoryPath, const size_t& size_total, const bool& safe_mode, const bool& verbose, const std::string& repo_path,
                     const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages,
-                    int& good_files, int& bad_files, size_t& size_done, bool& prev_print ,const std::string& server)
+                    int& good_files, int& bad_files, size_t& size_done, bool& prev_print, const std::string& server)
 {
     // Process the directory
     for (const auto& entry : std::filesystem::directory_iterator(directoryPath))
@@ -206,12 +208,14 @@ void walk_directory(const std::string& directoryPath, const size_t& size_total, 
         if (std::filesystem::is_directory(path))
         {
             // Recursive call for subdirectories
-            walk_directory(path.string(),size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files, size_done, prev_print, server);
+            walk_directory(path.string(),size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files,
+                           size_done, prev_print, server);
         }
         else if (std::filesystem::is_regular_file(path))
         {
             // Process regular files
-            check_file(path.string(),size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files,size_done,prev_print, server);
+            check_file(path.string(), size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files,
+                       size_done, prev_print, server);
         }
     }
 }
@@ -230,7 +234,7 @@ int main(int argc, char* argv[]) {
     int bad_files = 0;
     size_t total_size = 0;
     size_t size_done = 0;
-    bool prev_print = true;
+    bool prev_print = false;
 
     std::ifstream mirror_config_file(mirror_file);
     if (!mirror_config_file) {
@@ -372,6 +376,9 @@ int main(int argc, char* argv[]) {
         total_size += package.second.second;
     }
     std::cout << "Verifying " << count << " packages (" << format_file_size(total_size) << ")..." << '\n';
+    if (verbose){
+        std::cout << '\n';
+    }
     auto start_time = std::chrono::high_resolution_clock::now();
     walk_directory(repo_path+"/pool/", total_size,safe_mode, verbose, repo_path, packages, good_files, bad_files, size_done, prev_print, server);
     auto end_time = std::chrono::high_resolution_clock::now();
