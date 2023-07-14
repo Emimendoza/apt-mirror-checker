@@ -15,9 +15,10 @@
 #include <cerrno>
 #include <chrono>
 #include <filesystem>
+#include <array>
 
 constexpr size_t BUFFER_SIZE = 65536;
-
+constexpr unsigned char MAX_ERROR_DEPTH = 5;
 template <typename CharT>
 std::basic_istream<CharT>& ignore(std::basic_istream<CharT>& in){
     std::string ignoredValue;
@@ -25,7 +26,7 @@ std::basic_istream<CharT>& ignore(std::basic_istream<CharT>& in){
 }
 
 std::string format_file_size(double file_size_bytes) {
-    std::vector<std::string> units{"B", "KB", "MB", "GB", "TB"};
+    const std::vector<std::string> units{"B", "KB", "MB", "GB", "TB"};
     size_t unit_index = 0;
     while (file_size_bytes > 1024 && unit_index < units.size() - 1) {
         file_size_bytes /= 1024.0;
@@ -68,138 +69,179 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
 void check_file(const std::string &file_path, const size_t &size_total, const bool &safe_mode, const bool &verbose,
                 const std::string &repo_path,
                 const std::unordered_map<std::string, std::pair<std::string, size_t>> &packages, int &good_files,
-                int &bad_files, size_t &size_done, bool& prev_print, const std::string &server) {
-    std::string_view relative_file(file_path);
-    relative_file.remove_prefix(repo_path.length()+1);
-
-    // Calculate the hash of the file
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Failed to open file: " + file_path);
+                int &bad_files, size_t &size_done, bool& prev_print, const std::string &server, const auto& start_time,
+                const unsigned char& depth) {
+    if (depth > MAX_ERROR_DEPTH)
+    {
+        throw std::runtime_error("Max error depth exceeded: This could be caused by the downloaded file hash not "
+                                 "matching the expected hash too many times or by too many errors while downloading a file.\n");
     }
+    size_t file_size = 0;
+    try {
+        std::string_view relative_file(file_path);
+        relative_file.remove_prefix(repo_path.length() + 1);
 
-    EVP_MD_CTX* md_ctx = EVP_MD_CTX_new();
-    if (!md_ctx) {
+        // Calculate the hash of the file
+        std::ifstream file(file_path, std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("Failed to open file: " + file_path);
+        }
+
+        EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
+        if (!md_ctx) {
+            file.close();
+            throw std::runtime_error("Failed to create OpenSSL context");
+        }
+
+        if (EVP_DigestInit_ex(md_ctx, EVP_sha256(), nullptr) != 1) {
+            EVP_MD_CTX_free(md_ctx);
+            file.close();
+            throw std::runtime_error("Failed to initialize OpenSSL digest");
+        }
+
+        std::array<char, BUFFER_SIZE> buffer{};
+        size_t total_bytes_read = 0;
+
+        while (file) {
+            file.read(buffer.data(), BUFFER_SIZE);
+            size_t bytes_read = file.gcount();
+            total_bytes_read += bytes_read;
+            EVP_DigestUpdate(md_ctx, buffer.data(), bytes_read);
+        }
+
         file.close();
-        throw std::runtime_error("Failed to create OpenSSL context");
-    }
 
-    if (EVP_DigestInit_ex(md_ctx, EVP_sha256(), nullptr) != 1) {
+        if (total_bytes_read % BUFFER_SIZE == 0) {
+            // Handle the case when the file size is exactly a multiple of the buffer size
+            EVP_DigestUpdate(md_ctx, buffer.data(), 0);
+        }
+
+        unsigned char hash[EVP_MAX_MD_SIZE];
+        unsigned int hash_len;
+
+        if (EVP_DigestFinal_ex(md_ctx, hash, &hash_len) != 1) {
+            EVP_MD_CTX_free(md_ctx);
+            throw std::runtime_error("Failed to finalize OpenSSL digest");
+        }
+
         EVP_MD_CTX_free(md_ctx);
-        file.close();
-        throw std::runtime_error("Failed to initialize OpenSSL digest");
-    }
 
-    std::array<char, BUFFER_SIZE> buffer{};
-    size_t total_bytes_read = 0;
+        std::stringstream actual_hash_stream;
+        actual_hash_stream << std::hex << std::setfill('0');
+        for (unsigned int i = 0; i < hash_len; i++) {
+            actual_hash_stream << std::setw(2) << static_cast<unsigned>(hash[i]);
+        }
 
-    while (file) {
-        file.read(buffer.data(), BUFFER_SIZE);
-        size_t bytes_read = file.gcount();
-        total_bytes_read += bytes_read;
-        EVP_DigestUpdate(md_ctx, buffer.data(), bytes_read);
-    }
+        std::string actual_hash = actual_hash_stream.str();
 
-    file.close();
-
-    if (total_bytes_read % BUFFER_SIZE == 0) {
-        // Handle the case when the file size is exactly a multiple of the buffer size
-        EVP_DigestUpdate(md_ctx, buffer.data(), 0);
-    }
-
-    unsigned char hash[EVP_MAX_MD_SIZE];
-    unsigned int hash_len;
-
-    if (EVP_DigestFinal_ex(md_ctx, hash, &hash_len) != 1) {
-        EVP_MD_CTX_free(md_ctx);
-        throw std::runtime_error("Failed to finalize OpenSSL digest");
-    }
-
-    EVP_MD_CTX_free(md_ctx);
-
-    std::stringstream actual_hash_stream;
-    actual_hash_stream << std::hex << std::setfill('0');
-    for (unsigned int i = 0; i < hash_len; i++) {
-        actual_hash_stream << std::setw(2) << static_cast<unsigned>(hash[i]);
-    }
-    std::string actual_hash = actual_hash_stream.str();
-
-    auto file_info_iter = packages.find(std::string(relative_file));
-    if (file_info_iter != packages.end()) {
-        const auto& file_info = file_info_iter->second;
-        const std::string& expected_hash = file_info.first;
-        const size_t& file_size = file_info.second;
-        size_done += file_size;
-        if (actual_hash != expected_hash) {
-            bad_files++;
-            prev_print = false;
-            std::cout << "\x1b[A[BAD FILE] " << relative_file << " - actual hash: " << actual_hash << ", expected hash: "
-                << expected_hash << '\n';
-            if (!safe_mode) {
-                std::cout << "Downloading good version of " << file_path << "..." << '\n';
-
-                // Remove the existing file
-                if (std::remove(file_path.c_str()) != 0) {
-                    throw std::runtime_error("Error deleting file: " + file_path);
+        auto file_info_iter = packages.find(std::string(relative_file));
+        if (file_info_iter != packages.end()) {
+            const auto &file_info = file_info_iter->second;
+            const std::string &expected_hash = file_info.first;
+            file_size = file_info.second;
+            if (actual_hash != expected_hash) {
+                if (depth==0){
+                    bad_files++;
                 }
+                prev_print = false;
+                std::cout << "\x1b[A[BAD FILE] " << relative_file << " - actual hash: " << actual_hash
+                          << ", expected hash: "
+                          << expected_hash << '\n';
+                if (!safe_mode) {
+                    std::cout << "Downloading good version of " << file_path << "..." << '\n';
 
-                // Download the good version of the file
-                std::string download_url = server + "/ubuntu/" + std::string(relative_file);
-                CURL* curl = curl_easy_init();
-                if (curl) {
-                    std::ofstream output_file(file_path, std::ios::binary);
-                    if (!output_file) {
-                        curl_easy_cleanup(curl);
-                        throw std::runtime_error("Failed to open output file: " + file_path);
+                    // Remove the existing file
+                    if (std::remove(file_path.c_str()) != 0) {
+                        throw std::runtime_error("Error deleting file: " + file_path);
                     }
 
-                    output_file.rdbuf()->pubsetbuf(nullptr, 0);  // Disable output buffering
+                    // Download the good version of the file
+                    std::string download_url = server + "/ubuntu/" + std::string(relative_file);
+                    CURL *curl = curl_easy_init();
+                    if (curl) {
+                        std::ofstream output_file(file_path, std::ios::binary);
+                        if (!output_file) {
+                            curl_easy_cleanup(curl);
+                            throw std::runtime_error("Failed to open output file: " + file_path);
+                        }
 
-                    curl_easy_setopt(curl, CURLOPT_URL, download_url.c_str());
-                    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-                    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output_file);
+                        output_file.rdbuf()->pubsetbuf(nullptr, 0);  // Disable output buffering
 
-                    CURLcode res = curl_easy_perform(curl);
-                    if (res != CURLE_OK) {
+                        curl_easy_setopt(curl, CURLOPT_URL, download_url.c_str());
+                        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+                        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output_file);
+
+                        CURLcode res = curl_easy_perform(curl);
+                        if (res != CURLE_OK) {
+                            output_file.close();
+                            std::remove(file_path.c_str());
+                            curl_easy_cleanup(curl);
+                            throw std::runtime_error("Error downloading file: " + download_url);
+                        }
+
                         output_file.close();
-                        std::remove(file_path.c_str());
                         curl_easy_cleanup(curl);
-                        throw std::runtime_error("Error downloading file: " + download_url);
+                    } else {
+                        throw std::runtime_error("Failed to initialize cURL");
                     }
-
-                    output_file.close();
-                    curl_easy_cleanup(curl);
-                } else {
-                    throw std::runtime_error("Failed to initialize cURL");
+                    // Verify that the downloaded file is correct
+                    check_file(file_path, size_total,safe_mode,verbose,repo_path,packages,good_files,bad_files,
+                               size_done,prev_print,server,start_time,depth+1);
                 }
+            } else if (verbose) {
+                std::cout << "\x1b[A[GOOD FILE] " << relative_file << " - hash: " << actual_hash << '\n';
+                prev_print = false;
+                if (depth == 0){
+                    good_files++;
+                }
+            } else if (depth == 0) {
+                good_files++;
             }
-        } else if (verbose) {
-            std::cout << "\x1b[A[GOOD FILE] " << relative_file << " - hash: " << actual_hash << '\n';
-            prev_print = false;
-            good_files++;
         } else {
+            if (verbose) {
+                std::cout << "\x1b[A[GHOST FILE] " << relative_file << " - hash: " << actual_hash << '\n';
+                prev_print = false;
+            }
             good_files++;
         }
-    } else {
-        if (verbose) {
-            std::cout << "\x1b[A[GHOST FILE] " << relative_file << " - hash: " << actual_hash << '\n';
-            prev_print = false;
+        if (prev_print) {
+            std::cout << "\x1b[A\x1b[K";
         }
-        good_files++;
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time);
+        double rate = (size_done*1000.0)/duration.count();
+        unsigned int seconds_left = (size_total-size_done)/rate;
+        unsigned int seconds = duration.count()/1000;
+        std::cout << format_file_size(size_done) << '/' << format_file_size(size_total) <<
+                  " | % Done: " << std::setprecision(2) << (double) (size_done * 100) / size_total
+                  << "% | Good: " << good_files << " | Bad: " << bad_files << " | % Good: " <<
+                  (double) (good_files * 100) / (good_files + bad_files) << "% | " <<
+                  format_file_size(rate) << "/s | " << seconds/(3600) << ":" << (seconds%3600)/(60)
+                  << ":" << seconds%60 << "/" << seconds_left/(3600) << ":" << (seconds_left%3600)/(60) << ":" <<
+                  seconds_left%60 << "\n";
+        prev_print = true;
+
     }
-    if (prev_print){
-        std::cout << "\x1b[A\x1b[K";
+    catch (std::runtime_error& error)
+    {
+        std::cerr << "\n" << error.what() << "\n";
+        if (depth == MAX_ERROR_DEPTH)
+        {
+            std::cerr << "\nMax Error Handling Depth Exceeded\n";
+            throw;
+        }
+        sleep( 10);
+        check_file(file_path, size_total,safe_mode,verbose,repo_path,packages,good_files,bad_files,size_done,prev_print,
+                   server,start_time,depth+1);
     }
-    std::cout << "Done: " << format_file_size(size_done) << '/' << format_file_size(size_total) <<
-        " | Percent Done: " << std::setprecision(2) << (double) (size_done*100) / size_total <<"% | Good Files: " <<
-        good_files << " | Bad Files: " << bad_files << " | Percent Good: " << (double) (good_files*100) /
-        (good_files+bad_files) <<"%\n";
-    prev_print = true;
+    if (depth == 0){
+        size_done += file_size;
+    }
 }
 
 void walk_directory(const std::string& directoryPath, const size_t& size_total, const bool& safe_mode, const bool& verbose, const std::string& repo_path,
                     const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages,
-                    int& good_files, int& bad_files, size_t& size_done, bool& prev_print, const std::string& server)
+                    int& good_files, int& bad_files, size_t& size_done, bool& prev_print, const std::string& server,
+                    const auto& start_time)
 {
     // Process the directory
     for (const auto& entry : std::filesystem::directory_iterator(directoryPath))
@@ -209,13 +251,13 @@ void walk_directory(const std::string& directoryPath, const size_t& size_total, 
         {
             // Recursive call for subdirectories
             walk_directory(path.string(),size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files,
-                           size_done, prev_print, server);
+                           size_done, prev_print, server, start_time);
         }
         else if (std::filesystem::is_regular_file(path))
         {
             // Process regular files
             check_file(path.string(), size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files,
-                       size_done, prev_print, server);
+                       size_done, prev_print, server, start_time, 0);
         }
     }
 }
@@ -364,7 +406,7 @@ int main(int argc, char* argv[]) {
         std::cout << "Done Indexing! ";
         if (duration.count() < 1000) {
             std::cout << "Elapsed Time: " << duration.count() << " milliseconds\n";
-        } else if (duration.count() < 60000) {
+        } else if (duration.count() < 60*1000) {
             std::cout << "Elapsed Time: " << std::fixed << std::setprecision(2) << duration.count() / 1000.0 << " seconds\n";
         } else if (duration.count() < 60*60*1000){
             std::cout << "Elapsed Time: " << std::fixed << std::setprecision(2) << duration.count() / 60'000.0 << " minutes\n";
@@ -380,7 +422,8 @@ int main(int argc, char* argv[]) {
         std::cout << '\n';
     }
     auto start_time = std::chrono::high_resolution_clock::now();
-    walk_directory(repo_path+"/pool/", total_size,safe_mode, verbose, repo_path, packages, good_files, bad_files, size_done, prev_print, server);
+    walk_directory(repo_path+"/pool/", total_size,safe_mode, verbose, repo_path, packages, good_files, bad_files,
+                   size_done, prev_print, server, start_time);
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     std::cout << "Done checking repository." << '\n';
