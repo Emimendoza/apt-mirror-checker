@@ -16,6 +16,7 @@
 #include <chrono>
 #include <filesystem>
 #include <array>
+#include <format>
 
 constexpr size_t BUFFER_SIZE = 65536;
 constexpr unsigned char MAX_ERROR_DEPTH = 5;
@@ -207,17 +208,25 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
         if (prev_print) {
             std::cout << "\x1b[A\x1b[K";
         }
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time);
-        double rate = (size_done*1000.0)/duration.count();
-        unsigned int seconds_left = (size_total-size_done)/rate;
-        unsigned int seconds = duration.count()/1000;
-        std::cout << format_file_size(size_done) << '/' << format_file_size(size_total) <<
-                  " | % Done: " << std::setprecision(2) << (double) (size_done * 100) / size_total
-                  << "% | Good: " << good_files << " | Bad: " << bad_files << " | % Good: " <<
-                  (double) (good_files * 100) / (good_files + bad_files) << "% | " <<
-                  format_file_size(rate) << "/s | " << seconds/(3600) << ":" << (seconds%3600)/(60)
-                  << ":" << seconds%60 << "/" << seconds_left/(3600) << ":" << (seconds_left%3600)/(60) << ":" <<
-                  seconds_left%60 << "\n";
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+        double rate = (size_done * 1000.0) / duration.count();
+        unsigned int seconds_left = (size_total - size_done) / rate;
+        unsigned int seconds = duration.count() / 1000;
+
+        std::cout << std::format("{} / {} | % Done: {:.2f}% | Good: {} | Bad: {} | % Good: {:.2f}% | {} /s | {:02}:{:02}:{:02} / {:02}:{:02}:{:02}\n",
+                                 format_file_size(size_done),
+                                 format_file_size(size_total),
+                                 static_cast<double>(size_done * 100) / size_total,
+                                 good_files,
+                                 bad_files,
+                                 static_cast<double>(good_files * 100) / (good_files + bad_files),
+                                 format_file_size(rate),
+                                 seconds / 3600,
+                                 (seconds % 3600) / 60,
+                                 seconds % 60,
+                                 seconds_left / 3600,
+                                 (seconds_left % 3600) / 60,
+                                 seconds_left % 60);
         prev_print = true;
 
     }
@@ -421,10 +430,10 @@ int main(int argc, char* argv[]) {
     if (verbose){
         std::cout << '\n';
     }
-    auto start_time = std::chrono::high_resolution_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
     walk_directory(repo_path+"/pool/", total_size,safe_mode, verbose, repo_path, packages, good_files, bad_files,
                    size_done, prev_print, server, start_time);
-    auto end_time = std::chrono::high_resolution_clock::now();
+    auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     std::cout << "Done checking repository." << '\n';
     if (duration.count() < 1000) {
