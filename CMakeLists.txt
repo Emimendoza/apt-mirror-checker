@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Verify CXX)
+project(apt-mirror-checker CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 
@@ -24,5 +24,5 @@ else()
 endif()
 
 # Add the executable and link against libcurl and OpenSSL
-add_executable(Verify main.cpp)
-target_link_libraries(Verify PRIVATE ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt::fmt)
+add_executable(apt-mirror-checker main.cpp)
+target_link_libraries(apt-mirror-checker PRIVATE ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt::fmt)

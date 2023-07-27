@@ -27,6 +27,23 @@ std::basic_istream<CharT>& ignore(std::basic_istream<CharT>& in){
     return in >> ignoredValue;
 }
 
+void inline print_help(){
+    fmt::print("Usage: apt-mirror-checker [options]\n");
+    fmt::print("This program will check the integrity of an apt-mirror repository.\n");
+    fmt::print("It will check the hash of every file in the repository against the hash in the Packages file.\n");
+    fmt::print("If the hash does not match, it will mark the file as bad and then it will download the correct version of the file.\n");
+    fmt::print("If the hash matches, it will mark the file as good.\n");
+    fmt::print("If the file is not in the Packages file, it will mark the file as a zombie.\n");
+    fmt::print("\n\n");
+    fmt::print("Options:\n");
+    fmt::print("    --safe: Safe mode, will not download good version of files\n");
+    fmt::print("    --verbose: Print out every file as it is checked\n");
+    fmt::print("    --bad-lock: Use the bad lock file location (current working directory)\n");
+    fmt::print("    --delete-zombies: Delete zombie files\n");
+    fmt::print("    --help: Print this help message\n");
+    fmt::print("    --store-zombies: Store zombie files in a file\n");
+}
+
 std::string format_file_size(double file_size_bytes) {
     const std::vector<std::string> units{"B", "KB", "MB", "GB", "TB"};
     size_t unit_index = 0;
@@ -67,12 +84,24 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     stream.write(ptr, size * nmemb);
     return size * nmemb;
 }
+struct CTX
+{
+        const size_t& size_total;
+        const bool& safe_mode;
+        const bool& verbose;
+        const std::string& repo_path;
+        const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages;
+        int& good_files;
+        int& bad_files;
+        int& zombie_files;
+        size_t& size_done;
+        bool& prev_print;
+        const std::string& server;
+        const std::chrono::time_point<std::chrono::system_clock>& start_time;
+        std::vector<std::string_view>& zombie_files_list;
+};
 
-void check_file(const std::string &file_path, const size_t &size_total, const bool &safe_mode, const bool &verbose,
-                const std::string &repo_path,
-                const std::unordered_map<std::string, std::pair<std::string, size_t>> &packages, int &good_files,
-                int &bad_files, size_t &size_done, bool& prev_print, const std::string &server, const auto& start_time,
-                const unsigned char& depth) {
+void check_file(const std::string &file_path, const CTX& ctx, const unsigned char& depth) {
     if (depth > MAX_ERROR_DEPTH)
     {
         throw std::runtime_error("Max error depth exceeded: This could be caused by the downloaded file hash not "
@@ -81,7 +110,7 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
     size_t file_size = 0;
     try {
         std::string_view relative_file(file_path);
-        relative_file.remove_prefix(repo_path.length() + 1);
+        relative_file.remove_prefix(ctx.repo_path.length() + 1);
 
         // Calculate the hash of the file
         std::ifstream file(file_path, std::ios::binary);
@@ -136,18 +165,18 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
 
         std::string actual_hash = actual_hash_stream.str();
 
-        auto file_info_iter = packages.find(std::string(relative_file));
-        if (file_info_iter != packages.end()) {
+        auto file_info_iter = ctx.packages.find(std::string(relative_file));
+        if (file_info_iter != ctx.packages.end()) {
             const auto &file_info = file_info_iter->second;
             const std::string &expected_hash = file_info.first;
             file_size = file_info.second;
             if (actual_hash != expected_hash) {
                 if (depth==0){
-                    bad_files++;
+                    ctx.bad_files++;
                 }
-                prev_print = false;
-                fmt::print("[BAD FILE] {} - actual hash: {}, expected hash: {}\n", relative_file, actual_hash, expected_hash);
-                if (!safe_mode) {
+                ctx.prev_print = false;
+                fmt::print("\x1b[A[BAD FILE] {} - actual hash: {}, expected hash: {}\n", relative_file, actual_hash, expected_hash);
+                if (!ctx.safe_mode) {
                     fmt::print("Downloading good version of {}...\n", file_path);
 
                     // Remove the existing file
@@ -156,7 +185,7 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
                     }
 
                     // Download the good version of the file
-                    std::string download_url = server + "/ubuntu/" + std::string(relative_file);
+                    std::string download_url = ctx.server + "/ubuntu/" + std::string(relative_file);
                     CURL *curl = curl_easy_init();
                     if (curl) {
                         std::ofstream output_file(file_path, std::ios::binary);
@@ -185,39 +214,37 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
                         throw std::runtime_error("Failed to initialize cURL");
                     }
                     // Verify that the downloaded file is correct
-                    check_file(file_path, size_total,safe_mode,verbose,repo_path,packages,good_files,bad_files,
-                               size_done,prev_print,server,start_time,depth+1);
+                    check_file(file_path, ctx,depth+1);
                 }
-            } else if (verbose) {
-                fmt::print("\x1b[GOOD FILE] {} - hash: {}\n", relative_file, actual_hash);
-                prev_print = false;
+            } else if (ctx.verbose) {
+                fmt::print("\x1b[A[GOOD FILE] {} - hash: {}\n", relative_file, actual_hash);
+                ctx.prev_print = false;
                 if (depth == 0){
-                    good_files++;
+                    ctx.good_files++;
                 }
             } else if (depth == 0) {
-                good_files++;
+                ctx.good_files++;
             }
         } else {
-            if (verbose) {
-                fmt::print("\x1b[GHOST FILE] {} - hash: {}\n", relative_file, actual_hash);
-                prev_print = false;
-            }
-            good_files++;
+            fmt::print("\x1b[A[ZOMBIE FILE] {} - hash: {}\n", relative_file, actual_hash);
+            ctx.zombie_files_list.push_back(relative_file);
+            ctx.prev_print = false;
         }
-        if (prev_print) {
+        if (ctx.prev_print) {
             fmt::print("\x1b[A\x1b[K");
         }
         // Rewrite to make more legible
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time);
-        double rate = (size_done*1000.0)/duration.count();
-        unsigned int seconds_total = (size_total)/rate;
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - ctx.start_time);
+        double rate = (ctx.size_done*1000.0)/duration.count();
+        unsigned int seconds_total = (ctx.size_total)/rate;
         unsigned int seconds = duration.count()/1000;
-        fmt::print("{} | % Done: {:.2f}% | Good: {} | Bad: {} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
-                   format_file_size(size_done),
-                   (double)(size_done * 100) / size_total,
-                   good_files,
-                   bad_files,
-                   (double)(good_files * 100) / (good_files + bad_files),
+        fmt::print("{} | % Done: {:.2f}% | Good: {} | Bad: {} | Zombie:{} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
+                   format_file_size(ctx.size_done),
+                   (double)(ctx.size_done * 100) / ctx.size_total,
+                   ctx.good_files,
+                   ctx.bad_files,
+                   ctx.zombie_files,
+                   (double)(ctx.good_files * 100) / (ctx.good_files + ctx.bad_files),
                    format_file_size(rate),
                    seconds / 3600,
                    (seconds % 3600) / 60,
@@ -225,7 +252,7 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
                    seconds_total / 3600,
                    (seconds_total % 3600) / 60,
                    seconds_total % 60);
-        prev_print = true;
+        ctx.prev_print = true;
 
     }
     catch (std::runtime_error& error)
@@ -237,18 +264,14 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
             throw;
         }
         sleep( 10);
-        check_file(file_path, size_total,safe_mode,verbose,repo_path,packages,good_files,bad_files,size_done,prev_print,
-                   server,start_time,depth+1);
+        check_file(file_path, ctx,depth+1);
     }
     if (depth == 0){
-        size_done += file_size;
+        ctx.size_done += file_size;
     }
 }
 
-void walk_directory(const std::string& directoryPath, const size_t& size_total, const bool& safe_mode, const bool& verbose, const std::string& repo_path,
-                    const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages,
-                    int& good_files, int& bad_files, size_t& size_done, bool& prev_print, const std::string& server,
-                    const auto& start_time)
+void walk_directory(const std::string& directoryPath, const CTX& ctx)
 {
     // Process the directory
     for (const auto& entry : std::filesystem::directory_iterator(directoryPath))
@@ -257,14 +280,12 @@ void walk_directory(const std::string& directoryPath, const size_t& size_total, 
         if (std::filesystem::is_directory(path))
         {
             // Recursive call for subdirectories
-            walk_directory(path.string(),size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files,
-                           size_done, prev_print, server, start_time);
+            walk_directory(path.string(),ctx);
         }
         else if (std::filesystem::is_regular_file(path))
         {
             // Process regular files
-            check_file(path.string(), size_total, safe_mode, verbose, repo_path, packages, good_files, bad_files,
-                       size_done, prev_print, server, start_time, 0);
+            check_file(path.string(), ctx, 0);
         }
     }
 }
@@ -281,9 +302,11 @@ int main(int argc, char* argv[]) {
     std::unordered_map<std::string, std::pair<std::string, size_t>> packages;
     int good_files = 0;
     int bad_files = 0;
+    int zombie_files = 0;
     size_t total_size = 0;
     size_t size_done = 0;
     bool prev_print = false;
+    bool delete_zombies = false;
 
     std::ifstream mirror_config_file(mirror_file);
     if (!mirror_config_file) {
@@ -293,6 +316,7 @@ int main(int argc, char* argv[]) {
     bool safe_mode = false;
     bool verbose = false;
     bool bad_lock = false;
+    bool store_zombies = false;
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--safe") == 0) {
             safe_mode = true;
@@ -300,8 +324,26 @@ int main(int argc, char* argv[]) {
             verbose = true;
         } else if (std::strcmp(argv[i], "--bad-lock") == 0){
             bad_lock = true;
+        } else if (std::strcmp(argv[1], "--delete-zombies") == 0){
+            delete_zombies = true;
+        } else if (std::strcmp(argv[1], "--store-zombies")==0){
+            store_zombies = true;
+        }else if (std::strcmp(argv[1], "--help") == 0){
+            print_help();
+            return 0;
+        } else {
+            fmt::print("Unknown option: {}\n", argv[i]);
+            print_help();
+            return 1;
         }
     }
+
+    fmt::print("Options used:\n");
+    fmt::print("Using a{} lock\n", (bad_lock ? " bad" : ""));
+    fmt::print("Being {}\n", (verbose ? "verbose" : "quiet"));
+    fmt::print("Safe mode: {}\n", (safe_mode ? "ON" : "OFF"));
+    fmt::print("Delete zombies: {}\n", (delete_zombies ? "ON" : "OFF"));
+    fmt::print("\n");
 
     std::string line;
     while (std::getline(mirror_config_file, line)) {
@@ -419,9 +461,11 @@ int main(int argc, char* argv[]) {
     if (verbose){
         fmt::print("\n");
     }
+
     auto start_time = std::chrono::high_resolution_clock::now();
-    walk_directory(repo_path+"/pool/", total_size,safe_mode, verbose, repo_path, packages, good_files, bad_files,
-                   size_done, prev_print, server, start_time);
+    std::vector<std::string_view> zombie_files_list;
+    CTX ctx = {total_size, safe_mode, verbose, repo_path, packages, good_files, bad_files, zombie_files, size_done, prev_print, server, start_time, zombie_files_list};
+    walk_directory(repo_path+"/pool/", ctx);
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     fmt::print("Done checking repository.\n");
@@ -430,9 +474,28 @@ int main(int argc, char* argv[]) {
     fmt::print("\nSUMMARY:\n");
     fmt::print("Good files: {}\n", good_files);
     fmt::print("Bad files: {}\n", bad_files);
+    fmt::print("Zombie files: {}\n", zombie_files);
     if (good_files + bad_files > 0) {
         double success_rate = static_cast<double>(good_files) / (good_files + bad_files) * 100.0;
-        fmt::print("Success rate: {:.2f}%\n", success_rate);
+        fmt::print("Success rate: {:.2f}%\n\n", success_rate);
+    }
+    if (zombie_files > 0){
+        fmt::print("Zombie files:\n");
+        for (const auto& zombie_file: zombie_files_list){
+            if (delete_zombies){
+                std::remove(((repo_path+"/pool/").append(zombie_file)).c_str());
+                fmt::print("Deleted {}\n", zombie_file);
+            } else{
+                fmt::print("{}\n", zombie_file);
+            }
+        }
+        if(store_zombies){
+            std::ofstream zombie_file_file("zombie_files.txt", std::ios::app);
+            for (const auto& zombie_file: zombie_files_list){
+                zombie_file_file << (repo_path+"/pool/").append(zombie_file) << '\n';
+            }
+            zombie_file_file.close();
+        }
     }
 
     if (flock(lock_file_file, LOCK_UN) != 0) {
