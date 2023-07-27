@@ -28,20 +28,21 @@ std::basic_istream<CharT>& ignore(std::basic_istream<CharT>& in){
 }
 
 void inline print_help(){
-    fmt::print("Usage: apt-mirror-checker [options]\n");
-    fmt::print("This program will check the integrity of an apt-mirror repository.\n");
-    fmt::print("It will check the hash of every file in the repository against the hash in the Packages file.\n");
-    fmt::print("If the hash does not match, it will mark the file as bad and then it will download the correct version of the file.\n");
-    fmt::print("If the hash matches, it will mark the file as good.\n");
-    fmt::print("If the file is not in the Packages file, it will mark the file as a zombie.\n");
-    fmt::print("\n\n");
-    fmt::print("Options:\n");
-    fmt::print("    --safe: Safe mode, will not download good version of files\n");
-    fmt::print("    --verbose: Print out every file as it is checked\n");
-    fmt::print("    --bad-lock: Use the bad lock file location (current working directory)\n");
-    fmt::print("    --delete-zombies: Delete zombie files\n");
-    fmt::print("    --help: Print this help message\n");
-    fmt::print("    --store-zombies: Store zombie files in a file\n");
+    fmt::print(R"(Usage: apt-mirror-checker [options]
+This program checks the integrity of an apt-mirror repository.
+It compares the hash of each file with the hash in the Packages file.
+If the hash doesn't match, it marks the file as bad and downloads the correct version.
+If the hash matches, it marks the file as good.
+If the file is not in the Packages file, it marks the file as a zombie.
+
+
+Options:
+    --safe: Safe mode, will not download good versions of files
+    --verbose: Print out every file as it is checked
+    --bad-lock: Use the bad lock file location (current working directory)
+    --delete-zombies: Delete zombie files
+    --store-zombies: Store zombie files in a file
+    --help: Print this help message)");
 }
 
 std::string format_file_size(double file_size_bytes) {
