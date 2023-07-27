@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <array>
 #include <fmt/core.h>
+#include <fmt/chrono.h>
 
 constexpr size_t BUFFER_SIZE = 65536;
 constexpr unsigned char MAX_ERROR_DEPTH = 5;
@@ -145,11 +146,9 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
                     bad_files++;
                 }
                 prev_print = false;
-                std::cout << "\x1b[A[BAD FILE] " << relative_file << " - actual hash: " << actual_hash
-                          << ", expected hash: "
-                          << expected_hash << '\n';
+                fmt::print("[BAD FILE] {} - actual hash: {}, expected hash: {}\n", relative_file, actual_hash, expected_hash);
                 if (!safe_mode) {
-                    std::cout << "Downloading good version of " << file_path << "..." << '\n';
+                    fmt::print("Downloading good version of {}...\n", file_path);
 
                     // Remove the existing file
                     if (std::remove(file_path.c_str()) != 0) {
@@ -190,7 +189,7 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
                                size_done,prev_print,server,start_time,depth+1);
                 }
             } else if (verbose) {
-                std::cout << "\x1b[A[GOOD FILE] " << relative_file << " - hash: " << actual_hash << '\n';
+                fmt::print("\x1b[GOOD FILE] {} - hash: {}\n", relative_file, actual_hash);
                 prev_print = false;
                 if (depth == 0){
                     good_files++;
@@ -200,32 +199,32 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
             }
         } else {
             if (verbose) {
-                std::cout << "\x1b[A[GHOST FILE] " << relative_file << " - hash: " << actual_hash << '\n';
+                fmt::print("\x1b[GHOST FILE] {} - hash: {}\n", relative_file, actual_hash);
                 prev_print = false;
             }
             good_files++;
         }
         if (prev_print) {
-            std::cout << "\x1b[A\x1b[K";
+            fmt::print("\x1b[A\x1b[K");
         }
         // Rewrite to make more legible
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time);
         double rate = (size_done*1000.0)/duration.count();
         unsigned int seconds_total = (size_total)/rate;
         unsigned int seconds = duration.count()/1000;
-        std::cout << fmt::format("{} | % Done: {:.2f}% | Good: {} | Bad: {} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
-                                 format_file_size(size_done),
-                                 (double)(size_done * 100) / size_total,
-                                 good_files,
-                                 bad_files,
-                                 (double)(good_files * 100) / (good_files + bad_files),
-                                 format_file_size(rate),
-                                 seconds / 3600,
-                                 (seconds % 3600) / 60,
-                                 seconds % 60,
-                                 seconds_total / 3600,
-                                 (seconds_total % 3600) / 60,
-                                 seconds_total % 60);
+        fmt::print("{} | % Done: {:.2f}% | Good: {} | Bad: {} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
+                   format_file_size(size_done),
+                   (double)(size_done * 100) / size_total,
+                   good_files,
+                   bad_files,
+                   (double)(good_files * 100) / (good_files + bad_files),
+                   format_file_size(rate),
+                   seconds / 3600,
+                   (seconds % 3600) / 60,
+                   seconds % 60,
+                   seconds_total / 3600,
+                   (seconds_total % 3600) / 60,
+                   seconds_total % 60);
         prev_print = true;
 
     }
@@ -355,17 +354,17 @@ int main(int argc, char* argv[]) {
     while (true) {
         try {
             if (flock(lock_file_file, LOCK_EX | LOCK_NB) == 0) {
-                std::cout << "Got lock!" << '\n';
+                fmt::print("Got lock!\n");
                 break;
             }
         } catch (const std::exception& e) {
-            std::cout << "Failed to get lock, retrying in 2 minutes..." << '\n';
+            fmt::print("Failed to get lock, retrying in 2 minutes...\n");
             sleep(120);
         }
     }
     int count = 0;
     {
-        std::cout << "Indexing..." << '\n';
+        fmt::print("Indexing...\n");
         std::string e_name;
         std::string e_hash;
         std::string e_size;
@@ -411,50 +410,33 @@ int main(int argc, char* argv[]) {
         }
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        std::cout << "Done Indexing! ";
-        if (duration.count() < 1000) {
-            std::cout << "Elapsed Time: " << duration.count() << " milliseconds\n";
-        } else if (duration.count() < 60*1000) {
-            std::cout << "Elapsed Time: " << std::fixed << std::setprecision(2) << duration.count() / 1000.0 << " seconds\n";
-        } else if (duration.count() < 60*60*1000){
-            std::cout << "Elapsed Time: " << std::fixed << std::setprecision(2) << duration.count() / 60'000.0 << " minutes\n";
-        } else{
-            std::cout << "Elapsed Time: " << (int) (duration.count()/(60.0*60*1000)) << " hours " << (int) (duration.count()/(60*1000)) % 60 <<" minutes}\n";
-        }
+        fmt::print("Done Indexing! Elapsed Time: {:%H:%M:%S}\n", duration);
     }
     for (const auto& package : packages) {
         total_size += package.second.second;
     }
-    std::cout << "Verifying " << count << " packages (" << format_file_size(total_size) << ")..." << '\n';
+    fmt::print("Verifying {} packages ({})...\n", count, format_file_size(total_size));
     if (verbose){
-        std::cout << '\n';
+        fmt::print("\n");
     }
     auto start_time = std::chrono::high_resolution_clock::now();
     walk_directory(repo_path+"/pool/", total_size,safe_mode, verbose, repo_path, packages, good_files, bad_files,
                    size_done, prev_print, server, start_time);
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    std::cout << "Done checking repository." << '\n';
-    if (duration.count() < 1000) {
-        std::cout << "Elapsed Time: " << duration.count() << " milliseconds\n";
-    } else if (duration.count() < 60000) {
-        std::cout << "Elapsed Time: " << std::fixed << std::setprecision(2) << duration.count() / 1000.0 << " seconds\n";
-    } else if (duration.count() < 60*60*1000){
-        std::cout << "Elapsed Time: " << std::fixed << std::setprecision(2) << duration.count() / 60'000.0 << " minutes\n";
-    } else{
-        std::cout << "Elapsed Time: " << (int) (duration.count()/(60.0*60*1000)) << " hours " << (int) (duration.count()/(60*1000)) % 60 <<" minutes}\n";
-    }
+    fmt::print("Done checking repository.\n");
+    fmt::print("Elapsed Time: {:%H:%M:%S}\n", duration);
 
-    std::cout << "\nSUMMARY:" << '\n';
-    std::cout << "Good files: " << good_files << '\n';
-    std::cout << "Bad files: " << bad_files << '\n';
+    fmt::print("\nSUMMARY:\n");
+    fmt::print("Good files: {}\n", good_files);
+    fmt::print("Bad files: {}\n", bad_files);
     if (good_files + bad_files > 0) {
         double success_rate = static_cast<double>(good_files) / (good_files + bad_files) * 100.0;
-        std::cout << "Success rate: " << std::fixed << std::setprecision(2) << success_rate << "%" << '\n';
+        fmt::print("Success rate: {:.2f}%\n", success_rate);
     }
 
     if (flock(lock_file_file, LOCK_UN) != 0) {
-        std::cout << "Failed to release lock!" << '\n';
+        fmt::print("Failed to release lock!\n");
     }
     close(lock_file_file);
     unlink(lock_file.c_str());
