@@ -16,6 +16,7 @@
 #include <chrono>
 #include <filesystem>
 #include <array>
+#include <fmt/core.h>
 
 constexpr size_t BUFFER_SIZE = 65536;
 constexpr unsigned char MAX_ERROR_DEPTH = 5;
@@ -207,17 +208,24 @@ void check_file(const std::string &file_path, const size_t &size_total, const bo
         if (prev_print) {
             std::cout << "\x1b[A\x1b[K";
         }
+        // Rewrite to make more legible
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start_time);
         double rate = (size_done*1000.0)/duration.count();
-        unsigned int seconds_left = (size_total-size_done)/rate;
+        unsigned int seconds_total = (size_total)/rate;
         unsigned int seconds = duration.count()/1000;
-        std::cout << format_file_size(size_done) << '/' << format_file_size(size_total) <<
-                  " | % Done: " << std::setprecision(2) << (double) (size_done * 100) / size_total
-                  << "% | Good: " << good_files << " | Bad: " << bad_files << " | % Good: " <<
-                  (double) (good_files * 100) / (good_files + bad_files) << "% | " <<
-                  format_file_size(rate) << "/s | " << seconds/(3600) << ":" << (seconds%3600)/(60)
-                  << ":" << seconds%60 << "/" << seconds_left/(3600) << ":" << (seconds_left%3600)/(60) << ":" <<
-                  seconds_left%60 << "\n";
+        std::cout << fmt::format("{} | % Done: {:.2f}% | Good: {} | Bad: {} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
+                                 format_file_size(size_done),
+                                 (double)(size_done * 100) / size_total,
+                                 good_files,
+                                 bad_files,
+                                 (double)(good_files * 100) / (good_files + bad_files),
+                                 format_file_size(rate),
+                                 seconds / 3600,
+                                 (seconds % 3600) / 60,
+                                 seconds % 60,
+                                 seconds_total / 3600,
+                                 (seconds_total % 3600) / 60,
+                                 seconds_total % 60);
         prev_print = true;
 
     }
@@ -337,7 +345,7 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-
+    std::cout << "Getting lock...\n";
     int lock_file_file = open(lock_file.c_str(), O_CREAT|O_RDONLY,0666);
     if (lock_file_file == -1){
         std::cerr << "Error opening lock file: " << lock_file << '\n';

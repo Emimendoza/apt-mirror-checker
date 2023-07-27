@@ -9,6 +9,9 @@ find_package(CURL REQUIRED)
 # Find OpenSSL package
 find_package(OpenSSL REQUIRED)
 
+# FMT
+add_subdirectory(fmt)
+
 # Add the libcurl and OpenSSL include directories
 include_directories(${CURL_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
 
@@ -22,4 +25,4 @@ endif()
 
 # Add the executable and link against libcurl and OpenSSL
 add_executable(Verify main.cpp)
-target_link_libraries(Verify PRIVATE ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
+target_link_libraries(Verify PRIVATE ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt::fmt)
