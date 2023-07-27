@@ -345,7 +345,7 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-    std::cout << "Getting lock...\n";
+
     int lock_file_file = open(lock_file.c_str(), O_CREAT|O_RDONLY,0666);
     if (lock_file_file == -1){
         std::cerr << "Error opening lock file: " << lock_file << '\n';
