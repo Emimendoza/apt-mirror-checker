@@ -42,7 +42,9 @@ Options:
     --bad-lock: Use the bad lock file location (current working directory)
     --delete-zombies: Delete zombie files
     --store-zombies: Store zombie files in a file
-    --help: Print this help message)");
+    --zombie-only: Only check for zombie files
+    --help: Print this help message
+)");
 }
 
 std::string format_file_size(double file_size_bytes) {
@@ -101,6 +103,29 @@ struct CTX
         const std::chrono::time_point<std::chrono::system_clock>& start_time;
         std::vector<std::string_view>& zombie_files_list;
 };
+
+void print_status(const CTX& ctx)
+{
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - ctx.start_time);
+    double rate = (ctx.size_done*1000.0)/duration.count();
+    unsigned int seconds_total = (ctx.size_total)/rate;
+    unsigned int seconds = duration.count()/1000;
+    fmt::print("{} | % Done: {:.2f}% | Good: {} | Bad: {} | Zombie:{} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
+               format_file_size(ctx.size_done),
+               (double)(ctx.size_done * 100) / ctx.size_total,
+               ctx.good_files,
+               ctx.bad_files,
+               ctx.zombie_files,
+               (double)(ctx.good_files * 100) / (ctx.good_files + ctx.bad_files),
+               format_file_size(rate),
+               seconds / 3600,
+               (seconds % 3600) / 60,
+               seconds % 60,
+               seconds_total / 3600,
+               (seconds_total % 3600) / 60,
+               seconds_total % 60);
+    ctx.prev_print = true;
+}
 
 void check_file(const std::string &file_path, const CTX& ctx, const unsigned char& depth) {
     if (depth > MAX_ERROR_DEPTH)
@@ -234,27 +259,7 @@ void check_file(const std::string &file_path, const CTX& ctx, const unsigned cha
         if (ctx.prev_print) {
             fmt::print("\x1b[A\x1b[K");
         }
-        // Rewrite to make more legible
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - ctx.start_time);
-        double rate = (ctx.size_done*1000.0)/duration.count();
-        unsigned int seconds_total = (ctx.size_total)/rate;
-        unsigned int seconds = duration.count()/1000;
-        fmt::print("{} | % Done: {:.2f}% | Good: {} | Bad: {} | Zombie:{} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
-                   format_file_size(ctx.size_done),
-                   (double)(ctx.size_done * 100) / ctx.size_total,
-                   ctx.good_files,
-                   ctx.bad_files,
-                   ctx.zombie_files,
-                   (double)(ctx.good_files * 100) / (ctx.good_files + ctx.bad_files),
-                   format_file_size(rate),
-                   seconds / 3600,
-                   (seconds % 3600) / 60,
-                   seconds % 60,
-                   seconds_total / 3600,
-                   (seconds_total % 3600) / 60,
-                   seconds_total % 60);
-        ctx.prev_print = true;
-
+        print_status(ctx);
     }
     catch (std::runtime_error& error)
     {
@@ -291,6 +296,46 @@ void walk_directory(const std::string& directoryPath, const CTX& ctx)
     }
 }
 
+void walk_zombie_only(const std::string& directoryPath, const CTX& ctx)
+{
+    for (const auto& entry : std::filesystem::directory_iterator(directoryPath))
+    {
+        const auto& path = entry.path();
+        if (std::filesystem::is_directory(path))
+        {
+            // Recursive call for subdirectories
+            walk_directory(path.string(),ctx);
+        }
+        else if (std::filesystem::is_regular_file(path))
+        {
+            std::string str = path.string();
+            std::string_view relative_file(str);
+            relative_file.remove_prefix(ctx.repo_path.length() + 1);
+            auto file_info_iter = ctx.packages.find(std::string(relative_file));
+            if (file_info_iter == ctx.packages.end()) {
+                fmt::print("\x1b[A[ZOMBIE FILE] {}\n", relative_file);
+                ctx.zombie_files_list.push_back(relative_file);
+                ctx.prev_print = false;
+                ctx.zombie_files++;
+            } else {
+                const auto &file_info = file_info_iter->second;
+                size_t file_size = file_info.second;
+                ctx.good_files++;
+                ctx.size_done += file_size;
+                if (ctx.verbose)
+                {
+                    fmt::print("\x1b[A[GOOD FILE] {}\n", relative_file);
+                    ctx.prev_print = false;
+                }
+            }
+            if (ctx.prev_print) {
+                fmt::print("\x1b[A\x1b[K");
+            }
+            print_status(ctx);
+        }
+    }
+}
+
 int main(int argc, char* argv[]) {
     std::string mirror_file = "/etc/apt/mirror.list";
     std::string repo_path;
@@ -308,16 +353,17 @@ int main(int argc, char* argv[]) {
     size_t size_done = 0;
     bool prev_print = false;
     bool delete_zombies = false;
+    bool zombie_only = false;
+    bool safe_mode = false;
+    bool verbose = false;
+    bool bad_lock = false;
+    bool store_zombies = false;
 
     std::ifstream mirror_config_file(mirror_file);
     if (!mirror_config_file) {
         throw std::runtime_error("Failed to read mirror config file: " + mirror_file);
     }
 
-    bool safe_mode = false;
-    bool verbose = false;
-    bool bad_lock = false;
-    bool store_zombies = false;
     for (int i = 1; i < argc; i++) {
         if (std::strcmp(argv[i], "--safe") == 0) {
             safe_mode = true;
@@ -325,11 +371,13 @@ int main(int argc, char* argv[]) {
             verbose = true;
         } else if (std::strcmp(argv[i], "--bad-lock") == 0){
             bad_lock = true;
-        } else if (std::strcmp(argv[1], "--delete-zombies") == 0){
+        } else if (std::strcmp(argv[i], "--delete-zombies") == 0){
             delete_zombies = true;
-        } else if (std::strcmp(argv[1], "--store-zombies")==0){
+        } else if (std::strcmp(argv[i], "--store-zombies")==0){
             store_zombies = true;
-        }else if (std::strcmp(argv[1], "--help") == 0){
+        } else if (std::strcmp(argv[i], "--zombie-only")==0){
+            zombie_only = true;
+        }else if (std::strcmp(argv[i], "--help") == 0){
             print_help();
             return 0;
         } else {
@@ -344,6 +392,8 @@ int main(int argc, char* argv[]) {
     fmt::print("Being {}\n", (verbose ? "verbose" : "quiet"));
     fmt::print("Safe mode: {}\n", (safe_mode ? "ON" : "OFF"));
     fmt::print("Delete zombies: {}\n", (delete_zombies ? "ON" : "OFF"));
+    fmt::print("Store zombies: {}\n", (store_zombies ? "ON" : "OFF"));
+    fmt::print("Zombie only: {}\n", (zombie_only ? "ON" : "OFF"));
     fmt::print("\n");
 
     std::string line;
@@ -466,7 +516,13 @@ int main(int argc, char* argv[]) {
     auto start_time = std::chrono::high_resolution_clock::now();
     std::vector<std::string_view> zombie_files_list;
     CTX ctx = {total_size, safe_mode, verbose, repo_path, packages, good_files, bad_files, zombie_files, size_done, prev_print, server, start_time, zombie_files_list};
-    walk_directory(repo_path+"/pool/", ctx);
+    if (zombie_only){
+        fmt::print("Checking for zombie files...\n");
+        walk_zombie_only(repo_path+"/pool/", ctx);
+    } else {
+        walk_directory(repo_path+"/pool/", ctx);
+    }
+
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     fmt::print("Done checking repository.\n");
