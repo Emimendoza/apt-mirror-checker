@@ -13,13 +13,13 @@
 #include <iomanip>
 #include <fcntl.h>
 #include <cerrno>
-#include <chrono>
 #include <filesystem>
 #include <array>
 #include <fmt/core.h>
 #include <fmt/chrono.h>
+#include <sys/stat.h>
 
-constexpr size_t BUFFER_SIZE = 65536;
+constexpr size_t BUFFER_SIZE = 4194304; // 4 MB
 constexpr unsigned char MAX_ERROR_DEPTH = 5;
 template <typename CharT>
 std::basic_istream<CharT>& ignore(std::basic_istream<CharT>& in){
@@ -43,6 +43,8 @@ Options:
     --delete-zombies: Delete zombie files
     --store-zombies: Store zombie files in a file
     --zombie-only: Only check for zombie files
+    --algo2: Use the second algorithm for checking files (might be faster but ignores zombie files)
+    --debug: Enable debug mode (implies --safe and --bad-lock)
     --help: Print this help message
 )");
 }
@@ -102,10 +104,18 @@ struct CTX
         const std::string& server;
         const std::chrono::time_point<std::chrono::system_clock>& start_time;
         std::vector<std::string_view>& zombie_files_list;
+        EVP_MD_CTX *md_ctx;
+        char* buffer;
+        unsigned char* hash;
+        unsigned int* hash_len;
+        std::stringstream* actual_hash_stream;
 };
 
-void print_status(const CTX& ctx)
+inline void print_status(const CTX& ctx)
 {
+    if (ctx.prev_print) {
+        fmt::print("\x1b[A\x1b[K");
+    }
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - ctx.start_time);
     double rate = (ctx.size_done*1000.0)/duration.count();
     unsigned int seconds_total = (ctx.size_total)/rate;
@@ -127,6 +137,76 @@ void print_status(const CTX& ctx)
     ctx.prev_print = true;
 }
 
+inline void download_file(const std::string& file_path, const std::string& download_url){
+    CURL *curl = curl_easy_init();
+    if (curl) {
+        std::ofstream output_file(file_path, std::ios::binary);
+        if (!output_file) {
+            curl_easy_cleanup(curl);
+            throw std::runtime_error("Failed to open output file: " + file_path);
+        }
+
+        output_file.rdbuf()->pubsetbuf(nullptr, 0);  // Disable output buffering
+
+        curl_easy_setopt(curl, CURLOPT_URL, download_url.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output_file);
+
+        CURLcode res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            output_file.close();
+            std::remove(file_path.c_str());
+            curl_easy_cleanup(curl);
+            throw std::runtime_error("Error downloading file: " + download_url);
+        }
+
+        output_file.close();
+        curl_easy_cleanup(curl);
+    } else {
+        throw std::runtime_error("Failed to initialize cURL");
+    }
+}
+inline void get_sha256(const std::string& file_path, std::string& sum, const CTX& ctx){
+    // Calculate the hash of the file
+    EVP_MD_CTX_reset(ctx.md_ctx);
+
+    if (EVP_DigestInit_ex(ctx.md_ctx, EVP_sha256(), nullptr) != 1) {
+        throw std::runtime_error("Failed to initialize OpenSSL digest");
+    }
+
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open file: " + file_path);
+    }
+
+    size_t total_bytes_read = 0;
+
+    while (file) {
+        file.read(ctx.buffer, BUFFER_SIZE);
+        size_t bytes_read = file.gcount();
+        total_bytes_read += bytes_read;
+        EVP_DigestUpdate(ctx.md_ctx, ctx.buffer, bytes_read);
+    }
+
+    file.close();
+
+    if (total_bytes_read % BUFFER_SIZE == 0) {
+        // Handle the case when the file size is exactly a multiple of the buffer size
+        EVP_DigestUpdate(ctx.md_ctx, ctx.buffer, 0);
+    }
+
+    if (EVP_DigestFinal_ex(ctx.md_ctx, ctx.hash, ctx.hash_len) != 1) {
+        EVP_MD_CTX_free(ctx.md_ctx);
+        throw std::runtime_error("Failed to finalize OpenSSL digest");
+    }
+
+    for (unsigned int i = 0; i < *ctx.hash_len; i++) {
+        (*ctx.actual_hash_stream) << std::setw(2) << static_cast<unsigned>(ctx.hash[i]);
+    }
+    sum = (*ctx.actual_hash_stream).str();
+    (*ctx.actual_hash_stream).str("");
+}
+
 void check_file(const std::string &file_path, const CTX& ctx, const unsigned char& depth) {
     if (depth > MAX_ERROR_DEPTH)
     {
@@ -139,57 +219,8 @@ void check_file(const std::string &file_path, const CTX& ctx, const unsigned cha
         relative_file.remove_prefix(ctx.repo_path.length() + 1);
 
         // Calculate the hash of the file
-        std::ifstream file(file_path, std::ios::binary);
-        if (!file) {
-            throw std::runtime_error("Failed to open file: " + file_path);
-        }
-
-        EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
-        if (!md_ctx) {
-            file.close();
-            throw std::runtime_error("Failed to create OpenSSL context");
-        }
-
-        if (EVP_DigestInit_ex(md_ctx, EVP_sha256(), nullptr) != 1) {
-            EVP_MD_CTX_free(md_ctx);
-            file.close();
-            throw std::runtime_error("Failed to initialize OpenSSL digest");
-        }
-
-        std::array<char, BUFFER_SIZE> buffer{};
-        size_t total_bytes_read = 0;
-
-        while (file) {
-            file.read(buffer.data(), BUFFER_SIZE);
-            size_t bytes_read = file.gcount();
-            total_bytes_read += bytes_read;
-            EVP_DigestUpdate(md_ctx, buffer.data(), bytes_read);
-        }
-
-        file.close();
-
-        if (total_bytes_read % BUFFER_SIZE == 0) {
-            // Handle the case when the file size is exactly a multiple of the buffer size
-            EVP_DigestUpdate(md_ctx, buffer.data(), 0);
-        }
-
-        unsigned char hash[EVP_MAX_MD_SIZE];
-        unsigned int hash_len;
-
-        if (EVP_DigestFinal_ex(md_ctx, hash, &hash_len) != 1) {
-            EVP_MD_CTX_free(md_ctx);
-            throw std::runtime_error("Failed to finalize OpenSSL digest");
-        }
-
-        EVP_MD_CTX_free(md_ctx);
-
-        std::stringstream actual_hash_stream;
-        actual_hash_stream << std::hex << std::setfill('0');
-        for (unsigned int i = 0; i < hash_len; i++) {
-            actual_hash_stream << std::setw(2) << static_cast<unsigned>(hash[i]);
-        }
-
-        std::string actual_hash = actual_hash_stream.str();
+        std::string actual_hash;
+        get_sha256(file_path, actual_hash, ctx);
 
         auto file_info_iter = ctx.packages.find(std::string(relative_file));
         if (file_info_iter != ctx.packages.end()) {
@@ -211,34 +242,7 @@ void check_file(const std::string &file_path, const CTX& ctx, const unsigned cha
                     }
 
                     // Download the good version of the file
-                    std::string download_url = ctx.server + "/ubuntu/" + std::string(relative_file);
-                    CURL *curl = curl_easy_init();
-                    if (curl) {
-                        std::ofstream output_file(file_path, std::ios::binary);
-                        if (!output_file) {
-                            curl_easy_cleanup(curl);
-                            throw std::runtime_error("Failed to open output file: " + file_path);
-                        }
-
-                        output_file.rdbuf()->pubsetbuf(nullptr, 0);  // Disable output buffering
-
-                        curl_easy_setopt(curl, CURLOPT_URL, download_url.c_str());
-                        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-                        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &output_file);
-
-                        CURLcode res = curl_easy_perform(curl);
-                        if (res != CURLE_OK) {
-                            output_file.close();
-                            std::remove(file_path.c_str());
-                            curl_easy_cleanup(curl);
-                            throw std::runtime_error("Error downloading file: " + download_url);
-                        }
-
-                        output_file.close();
-                        curl_easy_cleanup(curl);
-                    } else {
-                        throw std::runtime_error("Failed to initialize cURL");
-                    }
+                    download_file(file_path, ctx.server + "/ubuntu/" + file_info_iter->first);
                     // Verify that the downloaded file is correct
                     check_file(file_path, ctx,depth+1);
                 }
@@ -255,9 +259,6 @@ void check_file(const std::string &file_path, const CTX& ctx, const unsigned cha
             fmt::print("\x1b[A[ZOMBIE FILE] {} - hash: {}\n", relative_file, actual_hash);
             ctx.zombie_files_list.push_back(relative_file);
             ctx.prev_print = false;
-        }
-        if (ctx.prev_print) {
-            fmt::print("\x1b[A\x1b[K");
         }
         print_status(ctx);
     }
@@ -276,6 +277,112 @@ void check_file(const std::string &file_path, const CTX& ctx, const unsigned cha
         ctx.size_done += file_size;
     }
 }
+
+inline std::pair<bool, size_t> get_file_info(const std::string& file_name){
+    struct stat buffer;
+    int rc = stat(file_name.c_str(), &buffer);
+    return std::make_pair(rc == 0, rc == 0 ? buffer.st_size : -1);
+}
+
+
+inline void check_file_2(const auto& package, const std::string& directoryPath, const CTX& ctx, const unsigned char& depth){
+    const std::string file_path = directoryPath + package.first;
+    if (depth > MAX_ERROR_DEPTH){
+        throw std::runtime_error("Max error depth exceeded: This could be caused by the downloaded file hash not "
+                                 "matching the expected hash too many times or by too many errors while downloading a file.\n");
+    }
+    try{
+        const auto file_info = get_file_info(file_path);
+        if (!file_info.first) {
+            fmt::print("\x1b[A[Missing File] {}\n", package.first);
+            ctx.prev_print = false;
+            // Download good version of the file
+            if (!ctx.safe_mode) {
+                download_file(file_path, ctx.server + "/ubuntu/" + package.first);
+                // Verify that the downloaded file is correct
+                check_file_2(package, directoryPath, ctx, depth + 1);
+            }
+            if (depth == 0) {
+                ctx.bad_files++;
+                ctx.size_done += package.second.second;
+                print_status(ctx);
+            }
+        } else if (file_info.second != package.second.second){
+            ctx.prev_print = false;
+            fmt::print("\x1b[A[BAD FILE] {} - actual size: {}, expected size: {}\n", package.first, file_info.second, package.second.second);
+            if (!ctx.safe_mode) {
+                fmt::print("Downloading good version of {}...\n", file_path);
+
+                // Remove the existing file
+                if (std::remove(file_path.c_str()) != 0) {
+                    throw std::runtime_error("Error deleting file: " + file_path);
+                }
+
+                // Download the good version of the file
+                download_file(file_path, ctx.server + "/ubuntu/" + package.first);
+                // Verify that the downloaded file is correct
+                check_file_2(package, directoryPath, ctx,depth+1);
+            }
+            if (depth == 0){
+                ctx.bad_files++;
+                ctx.size_done += package.second.second;
+                print_status(ctx);
+            }
+        } else {
+            std::string actual_hash;
+            get_sha256(file_path, actual_hash, ctx);
+            if (actual_hash != package.second.first){
+                if (depth==0){
+                    ctx.bad_files++;
+                }
+                ctx.prev_print = false;
+                fmt::print("\x1b[A[BAD FILE] {} - actual hash: {}, expected hash: {}\n", package.first, actual_hash, package.second.first);
+                if (!ctx.safe_mode) {
+                    fmt::print("Downloading good version of {}...\n", file_path);
+
+                    // Remove the existing file
+                    if (std::remove(file_path.c_str()) != 0) {
+                        throw std::runtime_error("Error deleting file: " + file_path);
+                    }
+
+                    // Download the good version of the file
+                    download_file(file_path, ctx.server + "/ubuntu/" + package.first);
+                    // Verify that the downloaded file is correct
+                    check_file_2(package, directoryPath, ctx,depth+1);
+                }
+            } else if (ctx.verbose) {
+                fmt::print("\x1b[A[GOOD FILE] {} - hash: {}\n", package.first, actual_hash);
+                ctx.prev_print = false;
+                if (depth == 0){
+                    ctx.good_files++;
+                    ctx.size_done += package.second.second;
+                    print_status(ctx);
+                }
+            } else if (depth == 0) {
+                ctx.good_files++;
+                ctx.size_done += package.second.second;
+                print_status(ctx);
+            }
+        }
+    }
+    catch (std::runtime_error& error)
+    {
+        std::cerr << "\n" << error.what() << "\n";
+        if (depth == MAX_ERROR_DEPTH)
+        {
+            std::cerr << "\nMax Error Handling Depth Exceeded\n";
+            throw;
+        }
+        sleep( 10);
+        check_file_2(package, directoryPath, ctx,depth+1);
+    }
+}
+void algo_2(const auto& packageVector,const std::string& directoryPath, const CTX& ctx){
+    for (const auto& package : packageVector){
+        check_file_2(package, directoryPath, ctx,0);
+    }
+}
+
 
 void walk_directory(const std::string& directoryPath, const CTX& ctx)
 {
@@ -328,9 +435,6 @@ void walk_zombie_only(const std::string& directoryPath, const CTX& ctx)
                     ctx.prev_print = false;
                 }
             }
-            if (ctx.prev_print) {
-                fmt::print("\x1b[A\x1b[K");
-            }
             print_status(ctx);
         }
     }
@@ -358,6 +462,8 @@ int main(int argc, char* argv[]) {
     bool verbose = false;
     bool bad_lock = false;
     bool store_zombies = false;
+    bool algo2 = false;
+    bool debug_mode = false;
 
     std::ifstream mirror_config_file(mirror_file);
     if (!mirror_config_file) {
@@ -375,9 +481,15 @@ int main(int argc, char* argv[]) {
             delete_zombies = true;
         } else if (std::strcmp(argv[i], "--store-zombies")==0){
             store_zombies = true;
-        } else if (std::strcmp(argv[i], "--zombie-only")==0){
+        } else if (std::strcmp(argv[i], "--zombie-only")==0) {
             zombie_only = true;
-        }else if (std::strcmp(argv[i], "--help") == 0){
+        } else if (std::strcmp(argv[i], "--algo2")==0) {
+            algo2 = true;
+        } else if (std::strcmp(argv[i], "--debug")==0) {
+            debug_mode = true;
+            safe_mode = true;
+            bad_lock = true;
+        } else if (std::strcmp(argv[i], "--help") == 0){
             print_help();
             return 0;
         } else {
@@ -387,6 +499,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    if((zombie_only || delete_zombies || store_zombies)&& algo2){
+        fmt::print("Options --zombie-only, --delete-zombies, and --store-zombies are incompatible with --algo2\n");
+        return 1;
+    }
+
     fmt::print("Options used:\n");
     fmt::print("Using a{} lock\n", (bad_lock ? " bad" : ""));
     fmt::print("Being {}\n", (verbose ? "verbose" : "quiet"));
@@ -394,7 +511,10 @@ int main(int argc, char* argv[]) {
     fmt::print("Delete zombies: {}\n", (delete_zombies ? "ON" : "OFF"));
     fmt::print("Store zombies: {}\n", (store_zombies ? "ON" : "OFF"));
     fmt::print("Zombie only: {}\n", (zombie_only ? "ON" : "OFF"));
+    fmt::print("Using algorithm {}\n", (algo2 ? "2" : "1"));
+    fmt::print("Debug mode: {}\n", (debug_mode ? "ON" : "OFF"));
     fmt::print("\n");
+
 
     std::string line;
     while (std::getline(mirror_config_file, line)) {
@@ -505,8 +625,26 @@ int main(int argc, char* argv[]) {
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
         fmt::print("Done Indexing! Elapsed Time: {:%H:%M:%S}\n", duration);
     }
-    for (const auto& package : packages) {
-        total_size += package.second.second;
+    std::vector<std::pair<const std::string, std::pair<std::string, size_t>>> packagesVec;
+    if (debug_mode){
+        int i = 0;
+        for (const auto& package : packages) {
+            total_size += package.second.second;
+            if(algo2){
+                packagesVec.push_back(package);
+            }
+            if (i == 100){
+                break;
+            }
+            i++;
+        }
+    } else{
+        for (const auto& package : packages) {
+            total_size += package.second.second;
+            if(algo2){
+                packagesVec.push_back(package);
+            }
+        }
     }
     fmt::print("Verifying {} packages ({})...\n", count, format_file_size(total_size));
     if (verbose){
@@ -515,23 +653,40 @@ int main(int argc, char* argv[]) {
 
     auto start_time = std::chrono::high_resolution_clock::now();
     std::vector<std::string_view> zombie_files_list;
-    CTX ctx = {total_size, safe_mode, verbose, repo_path, packages, good_files, bad_files, zombie_files, size_done, prev_print, server, start_time, zombie_files_list};
+    CTX ctx = {total_size, safe_mode, verbose, repo_path, packages, good_files, bad_files, zombie_files,
+               size_done, prev_print, server, start_time, zombie_files_list, EVP_MD_CTX_new(), new char[BUFFER_SIZE],
+               new unsigned char[EVP_MAX_MD_SIZE], new unsigned int, new std::stringstream};
+    (*ctx.actual_hash_stream) << std::hex << std::setfill('0');
+    if (!ctx.md_ctx){
+        throw std::runtime_error("Failed to create OpenSSL context");
+    }
     if (zombie_only){
         fmt::print("Checking for zombie files...\n");
         walk_zombie_only(repo_path+"/pool/", ctx);
-    } else {
+    } else if (!algo2) {
         walk_directory(repo_path+"/pool/", ctx);
+    } else {
+        algo_2(packagesVec, repo_path+"/", ctx);
     }
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+
+    delete[] ctx.hash;
+    delete ctx.hash_len;
+    delete ctx.actual_hash_stream;
+    EVP_MD_CTX_free(ctx.md_ctx);
+    delete[] ctx.buffer;
+
     fmt::print("Done checking repository.\n");
     fmt::print("Elapsed Time: {:%H:%M:%S}\n", duration);
 
     fmt::print("\nSUMMARY:\n");
     fmt::print("Good files: {}\n", good_files);
     fmt::print("Bad files: {}\n", bad_files);
-    fmt::print("Zombie files: {}\n", zombie_files);
+    if(!algo2) {
+        fmt::print("Zombie files: {}\n", zombie_files);
+    }
     if (good_files + bad_files > 0) {
         double success_rate = static_cast<double>(good_files) / (good_files + bad_files) * 100.0;
         fmt::print("Success rate: {:.2f}%\n\n", success_rate);
