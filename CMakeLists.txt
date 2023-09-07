@@ -19,6 +19,44 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Check if the <format> header is available
+include(CheckIncludeFileCXX)
+check_include_file_cxx(format HAS_CXX_FORMAT)
+
+if (NOT HAS_CXX_FORMAT)
+    message(STATUS "The <format> header is not available, cloning fmt from GitHub...")
+
+    # Set the directory where you want to clone fmt
+    set(FMT_INSTALL_DIR "${CMAKE_BINARY_DIR}/fmt")
+
+    # Clone fmt from GitHub
+    if (NOT EXISTS "${FMT_INSTALL_DIR}/CMakeLists.txt")
+        message(STATUS "Cloning fmt from GitHub...")
+
+        # Remove the fmt directory if it exists
+        if (EXISTS "${FMT_INSTALL_DIR}")
+            file(REMOVE_RECURSE "${FMT_INSTALL_DIR}")
+        endif ()
+
+        # Clone fmt from GitHub
+        execute_process(
+                COMMAND git clone https://github.com/fmtlib/fmt.git ${FMT_INSTALL_DIR}
+                WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+                RESULT_VARIABLE GIT_RESULT
+        )
+
+        if (NOT GIT_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to clone fmt from GitHub")
+        endif ()
+    else ()
+        message(STATUS "Using existing fmt repository.")
+    endif ()
+    # Add fmt as a subdirectory and build it
+    add_subdirectory(${FMT_INSTALL_DIR} fmt_build)
+
+else ()
+    message(STATUS "Found <format> header. No need to clone fmt.")
+endif ()
 
 # Find libcurl package
 find_package(CURL REQUIRED)
@@ -27,8 +65,11 @@ find_package(CURL REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 # Add the libcurl and OpenSSL include directories
-include_directories(${CURL_INCLUDE_DIRS} ${OPENSSL_INCLUDE_DIR})
-
+if(NOT HAS_CXX_FORMAT)
+    include_directories(${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt)
+else ()
+    include_directories(${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
+endif()
 # Optimize release
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -38,5 +79,13 @@ else()
 endif()
 
 # Add the executable and link against libcurl and OpenSSL
-add_executable(apt-mirror-checker main.cpp)
-target_link_libraries(apt-mirror-checker PRIVATE ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
+add_executable(apt-mirror-checker main.cpp
+        #src/apt_mirror_tools.cpp
+        #src/apt_mirror_tools.h
+        src/print.h
+)
+if(NOT HAS_CXX_FORMAT)
+    target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt)
+else ()
+    target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
+endif()

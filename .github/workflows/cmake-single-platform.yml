@@ -28,9 +28,15 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install libcurl4-openssl-dev libssl-dev g++-13
-    - name: Configure CMake
-      run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_CXX_COMPILER=g++-13
+    - name: Configure CMake with g++-13
+      run: cmake -B ${{github.workspace}}/build1 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_CXX_COMPILER=g++-13
 
-    - name: Build
-      run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}}
+    - name: Configure CMake with g++-12
+      run: cmake -B ${{github.workspace}}/build2 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DCMAKE_CXX_COMPILER=g++-12
+
+    - name: Build with g++-13
+      run: cmake --build ${{github.workspace}}/build1 --config ${{env.BUILD_TYPE}}
+
+    - name: Build with g++-12
+      run: cmake --build ${{github.workspace}}/build2 --config ${{env.BUILD_TYPE}}
 

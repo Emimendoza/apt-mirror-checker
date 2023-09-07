@@ -17,19 +17,11 @@
 #include <array>
 #include <chrono>
 #include <sys/stat.h>
-
-// Support for std::print is not yet available in GCC stdlib (as of now), but it is in clang
-#if defined __has_include && __has_include(<print>)
-    #include <print>
-    #define print std::print
-#else
-    // Support for format is in clang 14 or above or in gcc13 or above
-    #include <format>
-    #define print std::cout << std::format
-#endif
+#include "src/print.h"
 
 constexpr size_t BUFFER_SIZE = 4194304; // 4 MB
 constexpr unsigned char MAX_ERROR_DEPTH = 5;
+
 template <typename CharT>
 std::basic_istream<CharT>& ignore(std::basic_istream<CharT>& in){
     std::string ignoredValue;
@@ -37,7 +29,7 @@ std::basic_istream<CharT>& ignore(std::basic_istream<CharT>& in){
 }
 
 void inline print_help(){
-    print(R"(Usage: apt-mirror-checker [options]
+    print::raw_print(R"(Usage: apt-mirror-checker [options]
 This program checks the integrity of an apt-mirror repository.
 It compares the hash of each file with the hash in the Packages file.
 If the hash doesn't match, it marks the file as bad and downloads the correct version.
@@ -123,13 +115,13 @@ struct CTX
 inline void print_status(const CTX& ctx)
 {
     if (ctx.prev_print) {
-        print("\x1b[A\x1b[K");
+        print::raw_print("\x1b[A\x1b[K");
     }
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - ctx.start_time);
     double rate = (ctx.size_done*1000.0)/duration.count();
     unsigned int seconds_total = (ctx.size_total)/rate;
     unsigned int seconds = duration.count()/1000;
-    print("{} | % Done: {:.2f}% | Good: {} | Bad: {} | Zombie:{} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
+    print::raw_print("{} | % Done: {:.2f}% | Good: {} | Bad: {} | Zombie:{} | % Good: {:.2f}% | {}/s | {:02}:{:02}:{:02}/{:02}:{:02}:{:02}\n",
                format_file_size(ctx.size_done),
                (double)(ctx.size_done * 100) / ctx.size_total,
                ctx.good_files,
@@ -241,9 +233,9 @@ void check_file(const std::string &file_path, const CTX& ctx, const unsigned cha
                     ctx.bad_files++;
                 }
                 ctx.prev_print = false;
-                print("\x1b[A[BAD FILE] {} - actual hash: {}, expected hash: {}\n", relative_file, actual_hash, expected_hash);
+                print::raw_print("\x1b[A[BAD FILE] {} - actual hash: {}, expected hash: {}\n", relative_file, actual_hash, expected_hash);
                 if (!ctx.safe_mode) {
-                    print("Downloading good version of {}...\n", file_path);
+                    print::raw_print("Downloading good version of {}...\n", file_path);
 
                     // Remove the existing file
                     if (std::remove(file_path.c_str()) != 0) {
@@ -256,7 +248,7 @@ void check_file(const std::string &file_path, const CTX& ctx, const unsigned cha
                     check_file(file_path, ctx,depth+1);
                 }
             } else if (ctx.verbose) {
-                print("\x1b[A[GOOD FILE] {} - hash: {}\n", relative_file, actual_hash);
+                print::raw_print("\x1b[A[GOOD FILE] {} - hash: {}\n", relative_file, actual_hash);
                 ctx.prev_print = false;
                 if (depth == 0){
                     ctx.good_files++;
@@ -265,7 +257,7 @@ void check_file(const std::string &file_path, const CTX& ctx, const unsigned cha
                 ctx.good_files++;
             }
         } else {
-            print("\x1b[A[ZOMBIE FILE] {} - hash: {}\n", relative_file, actual_hash);
+            print::raw_print("\x1b[A[ZOMBIE FILE] {} - hash: {}\n", relative_file, actual_hash);
             ctx.zombie_files_list.push_back(relative_file);
             ctx.prev_print = false;
         }
@@ -303,7 +295,7 @@ inline void check_file_2(const auto& package, const std::string& directoryPath, 
     try{
         const auto file_info = get_file_info(file_path);
         if (!file_info.first) {
-            print("\x1b[A[Missing File] {}\n", package.first);
+            print::raw_print("\x1b[A[Missing File] {}\n", package.first);
             ctx.prev_print = false;
             // Download good version of the file
             if (!ctx.safe_mode) {
@@ -318,9 +310,9 @@ inline void check_file_2(const auto& package, const std::string& directoryPath, 
             }
         } else if (file_info.second != package.second.second){
             ctx.prev_print = false;
-            print("\x1b[A[BAD FILE] {} - actual size: {}, expected size: {}\n", package.first, file_info.second, package.second.second);
+            print::raw_print("\x1b[A[BAD FILE] {} - actual size: {}, expected size: {}\n", package.first, file_info.second, package.second.second);
             if (!ctx.safe_mode) {
-                print("Downloading good version of {}...\n", file_path);
+                print::raw_print("Downloading good version of {}...\n", file_path);
 
                 // Remove the existing file
                 if (std::remove(file_path.c_str()) != 0) {
@@ -345,9 +337,9 @@ inline void check_file_2(const auto& package, const std::string& directoryPath, 
                     ctx.bad_files++;
                 }
                 ctx.prev_print = false;
-                print("\x1b[A[BAD FILE] {} - actual hash: {}, expected hash: {}\n", package.first, actual_hash, package.second.first);
+                print::raw_print("\x1b[A[BAD FILE] {} - actual hash: {}, expected hash: {}\n", package.first, actual_hash, package.second.first);
                 if (!ctx.safe_mode) {
-                    print("Downloading good version of {}...\n", file_path);
+                    print::raw_print("Downloading good version of {}...\n", file_path);
 
                     // Remove the existing file
                     if (std::remove(file_path.c_str()) != 0) {
@@ -360,7 +352,7 @@ inline void check_file_2(const auto& package, const std::string& directoryPath, 
                     check_file_2(package, directoryPath, ctx,depth+1);
                 }
             } else if (ctx.verbose) {
-                print("\x1b[A[GOOD FILE] {} - hash: {}\n", package.first, actual_hash);
+                print::raw_print("\x1b[A[GOOD FILE] {} - hash: {}\n", package.first, actual_hash);
                 ctx.prev_print = false;
                 if (depth == 0){
                     ctx.good_files++;
@@ -429,7 +421,7 @@ void walk_zombie_only(const std::string& directoryPath, const CTX& ctx)
             relative_file.remove_prefix(ctx.repo_path.length() + 1);
             auto file_info_iter = ctx.packages.find(std::string(relative_file));
             if (file_info_iter == ctx.packages.end()) {
-                print("\x1b[A[ZOMBIE FILE] {}\n", relative_file);
+                print::raw_print("\x1b[A[ZOMBIE FILE] {}\n", relative_file);
                 ctx.zombie_files_list.push_back(relative_file);
                 ctx.prev_print = false;
                 ctx.zombie_files++;
@@ -440,7 +432,7 @@ void walk_zombie_only(const std::string& directoryPath, const CTX& ctx)
                 ctx.size_done += file_size;
                 if (ctx.verbose)
                 {
-                    print("\x1b[A[GOOD FILE] {}\n", relative_file);
+                    print::raw_print("\x1b[A[GOOD FILE] {}\n", relative_file);
                     ctx.prev_print = false;
                 }
             }
@@ -502,27 +494,27 @@ int main(int argc, char* argv[]) {
             print_help();
             return 0;
         } else {
-            print("Unknown option: {}\n", argv[i]);
+            print::raw_print("Unknown option: {}\n", argv[i]);
             print_help();
             return 1;
         }
     }
 
     if((zombie_only || delete_zombies || store_zombies)&& algo2){
-        print("Options --zombie-only, --delete-zombies, and --store-zombies are incompatible with --algo2\n");
+        print::raw_print("Options --zombie-only, --delete-zombies, and --store-zombies are incompatible with --algo2\n");
         return 1;
     }
 
-    print("Options used:\n");
-    print("Using a{} lock\n", (bad_lock ? " bad" : ""));
-    print("Being {}\n", (verbose ? "verbose" : "quiet"));
-    print("Safe mode: {}\n", (safe_mode ? "ON" : "OFF"));
-    print("Delete zombies: {}\n", (delete_zombies ? "ON" : "OFF"));
-    print("Store zombies: {}\n", (store_zombies ? "ON" : "OFF"));
-    print("Zombie only: {}\n", (zombie_only ? "ON" : "OFF"));
-    print("Using algorithm {}\n", (algo2 ? "2" : "1"));
-    print("Debug mode: {}\n", (debug_mode ? "ON" : "OFF"));
-    print("\n");
+    print::raw_print("Options used:\n");
+    print::raw_print("Using a{} lock\n", (bad_lock ? " bad" : ""));
+    print::raw_print("Being {}\n", (verbose ? "verbose" : "quiet"));
+    print::raw_print("Safe mode: {}\n", (safe_mode ? "ON" : "OFF"));
+    print::raw_print("Delete zombies: {}\n", (delete_zombies ? "ON" : "OFF"));
+    print::raw_print("Store zombies: {}\n", (store_zombies ? "ON" : "OFF"));
+    print::raw_print("Zombie only: {}\n", (zombie_only ? "ON" : "OFF"));
+    print::raw_print("Using algorithm {}\n", (algo2 ? "2" : "1"));
+    print::raw_print("Debug mode: {}\n", (debug_mode ? "ON" : "OFF"));
+    print::raw_print("\n");
 
 
     std::string line;
@@ -576,17 +568,17 @@ int main(int argc, char* argv[]) {
     while (true) {
         try {
             if (flock(lock_file_file, LOCK_EX | LOCK_NB) == 0) {
-                print("Got lock!\n");
+                print::raw_print("Got lock!\n");
                 break;
             }
         } catch (const std::exception& e) {
-            print("Failed to get lock, retrying in 2 minutes...\n");
+            print::raw_print("Failed to get lock, retrying in 2 minutes...\n");
             sleep(120);
         }
     }
     int count = 0;
     {
-        print("Indexing...\n");
+        print::raw_print("Indexing...\n");
         std::string e_name;
         std::string e_hash;
         std::string e_size;
@@ -632,7 +624,7 @@ int main(int argc, char* argv[]) {
         }
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        print("Done Indexing! Elapsed Time: {:%H:%M:%S}\n", duration);
+        print::raw_print("Done Indexing! Elapsed Time: {:%H:%M:%S}\n", duration);
     }
     std::vector<std::pair<const std::string, std::pair<std::string, size_t>>> packagesVec;
     if (debug_mode){
@@ -655,9 +647,9 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-    print("Verifying {} packages ({})...\n", count, format_file_size(total_size));
+    print::raw_print("Verifying {} packages ({})...\n", count, format_file_size(total_size));
     if (verbose){
-        print("\n");
+        print::raw_print("\n");
     }
 
     auto start_time = std::chrono::high_resolution_clock::now();
@@ -670,7 +662,7 @@ int main(int argc, char* argv[]) {
         throw std::runtime_error("Failed to create OpenSSL context");
     }
     if (zombie_only){
-        print("Checking for zombie files...\n");
+        print::raw_print("Checking for zombie files...\n");
         walk_zombie_only(repo_path+"/pool/", ctx);
     } else if (!algo2) {
         walk_directory(repo_path+"/pool/", ctx);
@@ -687,27 +679,27 @@ int main(int argc, char* argv[]) {
     EVP_MD_CTX_free(ctx.md_ctx);
     delete[] ctx.buffer;
 
-    print("Done checking repository.\n");
-    print("Elapsed Time: {:%H:%M:%S}\n", duration);
+    print::raw_print("Done checking repository.\n");
+    print::raw_print("Elapsed Time: {:%H:%M:%S}\n", duration);
 
-    print("\nSUMMARY:\n");
-    print("Good files: {}\n", good_files);
-    print("Bad files: {}\n", bad_files);
+    print::raw_print("\nSUMMARY:\n");
+    print::raw_print("Good files: {}\n", good_files);
+    print::raw_print("Bad files: {}\n", bad_files);
     if(!algo2) {
-        print("Zombie files: {}\n", zombie_files);
+        print::raw_print("Zombie files: {}\n", zombie_files);
     }
     if (good_files + bad_files > 0) {
         double success_rate = static_cast<double>(good_files) / (good_files + bad_files) * 100.0;
-        print("Success rate: {:.2f}%\n\n", success_rate);
+        print::raw_print("Success rate: {:.2f}%\n\n", success_rate);
     }
     if (zombie_files > 0){
-        print("Zombie files:\n");
+        print::raw_print("Zombie files:\n");
         for (const auto& zombie_file: zombie_files_list){
             if (delete_zombies){
                 std::remove(((repo_path+"/pool/").append(zombie_file)).c_str());
-                print("Deleted {}\n", zombie_file);
+                print::raw_print("Deleted {}\n", zombie_file);
             } else{
-                print("{}\n", zombie_file);
+                print::raw_print("{}\n", zombie_file);
             }
         }
         if(store_zombies){
@@ -720,7 +712,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (flock(lock_file_file, LOCK_UN) != 0) {
-        print("Failed to release lock!\n");
+        print::raw_print("Failed to release lock!\n");
     }
     close(lock_file_file);
     unlink(lock_file.c_str());
