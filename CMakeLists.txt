@@ -64,12 +64,6 @@ find_package(CURL REQUIRED)
 # Find OpenSSL package
 find_package(OpenSSL REQUIRED)
 
-# Add the libcurl and OpenSSL include directories
-if(NOT HAS_CXX_FORMAT)
-    include_directories(${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt)
-else ()
-    include_directories(${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
-endif()
 # Optimize release
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -79,7 +73,7 @@ else()
 endif()
 
 # Add the executable and link against libcurl and OpenSSL
-add_executable(apt-mirror-checker main.cpp
+add_executable(apt-mirror-checker # main.cpp
         src/apt_mirror_tools.cpp
         src/apt_mirror_tools.h
         src/print.h

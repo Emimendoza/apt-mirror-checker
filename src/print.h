@@ -22,9 +22,23 @@
 #endif
 
 namespace print {
-    bool printed_status = false;
-    bool verbose = false;
-    std::mutex mtx;
+    namespace{
+        bool verbose = false;
+        std::mutex mtx;
+        bool printed_status = false;
+    }
+
+    /**
+     * @brief Set the verbose flag.
+     *
+     * This function sets the verbose flag to the specified value.
+     *
+     * @param v The value to set the verbose flag to.
+     */
+    [[maybe_unused]]
+    static void set_verbose(bool v) {
+        verbose = v;
+    }
 
     /**
      * @brief Print a formatted message.
@@ -36,7 +50,8 @@ namespace print {
      * @param args The arguments to be formatted and printed.
      */
     template<typename ...Args>
-    [[maybe_unused]] void print(print_internal_fmt_type fmt, Args&& ...args) {
+    [[maybe_unused]]
+    static void print(print_internal_fmt_type fmt, Args&& ...args) {
         std::lock_guard<std::mutex> lock(mtx);
         if (printed_status) {
             std::cout << "\x1b[A\x1b[K";
@@ -55,7 +70,8 @@ namespace print {
      * @param args The arguments to be formatted and printed.
      */
     template<typename ...Args>
-    [[maybe_unused]] void stat_print(print_internal_fmt_type fmt, Args&& ...args) {
+    [[maybe_unused]]
+    static void stat_print(print_internal_fmt_type fmt, Args&& ...args) {
         std::lock_guard<std::mutex> lock(mtx);
         if (printed_status) {
             std::cout << "\x1b[A\x1b[K";
@@ -75,7 +91,8 @@ namespace print {
      * @param args The arguments to be formatted and printed.
      */
     template<typename ...Args>
-    [[maybe_unused]] void verbose_print(print_internal_fmt_type fmt, Args&& ...args) {
+    [[maybe_unused]]
+    static void verbose_print(print_internal_fmt_type fmt, Args&& ...args) {
         if (!verbose) {
             return;
         }
@@ -98,7 +115,8 @@ namespace print {
      * @param args The arguments to be formatted and printed.
      */
     template<typename ...Args>
-    [[maybe_unused]] void raw_print(print_internal_fmt_type fmt, Args&& ...args) {
+    [[maybe_unused]]
+    static void raw_print(print_internal_fmt_type fmt, Args&& ...args) {
         std::lock_guard<std::mutex> lock(mtx);
         print_internal(fmt, std::forward<Args>(args)...);
     }
