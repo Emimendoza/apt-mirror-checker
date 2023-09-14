@@ -7,6 +7,7 @@
 #include <openssl/evp.h>
 #include <vector>
 #include <atomic>
+#include <thread>
 
 constexpr unsigned char SHA256_HASH_SIZE = 32;
 constexpr size_t BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
