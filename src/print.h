@@ -1,5 +1,4 @@
-#ifndef APT_MIRROR_CHECKER_PRINT_H
-#define APT_MIRROR_CHECKER_PRINT_H
+#pragma once
 
 #include <iostream>
 #include <mutex>
@@ -37,7 +36,7 @@ namespace print {
      * @param args The arguments to be formatted and printed.
      */
     template<typename ...Args>
-    void print(print_internal_fmt_type fmt, Args&& ...args) {
+    [[maybe_unused]] void print(print_internal_fmt_type fmt, Args&& ...args) {
         std::lock_guard<std::mutex> lock(mtx);
         if (printed_status) {
             std::cout << "\x1b[A\x1b[K";
@@ -56,7 +55,7 @@ namespace print {
      * @param args The arguments to be formatted and printed.
      */
     template<typename ...Args>
-    void stat_print(print_internal_fmt_type fmt, Args&& ...args) {
+    [[maybe_unused]] void stat_print(print_internal_fmt_type fmt, Args&& ...args) {
         std::lock_guard<std::mutex> lock(mtx);
         if (printed_status) {
             std::cout << "\x1b[A\x1b[K";
@@ -76,7 +75,7 @@ namespace print {
      * @param args The arguments to be formatted and printed.
      */
     template<typename ...Args>
-    void verbose_print(print_internal_fmt_type fmt, Args&& ...args) {
+    [[maybe_unused]] void verbose_print(print_internal_fmt_type fmt, Args&& ...args) {
         if (!verbose) {
             return;
         }
@@ -99,7 +98,7 @@ namespace print {
      * @param args The arguments to be formatted and printed.
      */
     template<typename ...Args>
-    void raw_print(print_internal_fmt_type fmt, Args&& ...args) {
+    [[maybe_unused]] void raw_print(print_internal_fmt_type fmt, Args&& ...args) {
         std::lock_guard<std::mutex> lock(mtx);
         print_internal(fmt, std::forward<Args>(args)...);
     }
@@ -107,4 +106,4 @@ namespace print {
 
 #undef print_internal
 #undef print_internal_fmt_type
-#endif
+

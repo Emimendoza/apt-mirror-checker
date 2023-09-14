@@ -80,9 +80,10 @@ endif()
 
 # Add the executable and link against libcurl and OpenSSL
 add_executable(apt-mirror-checker main.cpp
-        #src/apt_mirror_tools.cpp
-        #src/apt_mirror_tools.h
+        src/apt_mirror_tools.cpp
+        src/apt_mirror_tools.h
         src/print.h
+        src/main.cpp
 )
 if(NOT HAS_CXX_FORMAT)
     target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt)
