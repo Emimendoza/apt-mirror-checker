@@ -685,11 +685,12 @@ int main(int argc, char* argv[]) {
                 for (const auto &arch: archs) {
                     curr_file = repo_path + std::string("/dists/").append(distro).append("/").append(distro2).append(
                             "/binary-").append(arch).append("/Packages");
-                    if (!exists(std::filesystem::path(curr_file))){
-                        if(exists(std::filesystem::path(curr_file + ".xz")))
-                            curr_file.append(".xz");
-                        // TODO: ADD gz support
-                    }
+					if (exists(std::filesystem::path(curr_file))) {
+					} else if (exists(std::filesystem::path(curr_file + ".xz"))) {
+						curr_file.append(".xz");
+					} else {
+						continue;
+					}
                     mirror_content = get_file_contents(curr_file);
                     start = 0;
                     while (get_next(mirror_content, start, entry, "\n\n")) {
