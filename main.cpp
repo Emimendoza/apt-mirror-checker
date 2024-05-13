@@ -656,15 +656,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     while (true) {
-        try {
-            if (flock(lock_file_file, LOCK_EX | LOCK_NB) == 0) {
-                print::raw_print("Got lock!\n");
-                break;
-            }
-        } catch (const std::exception& e) {
-            print::raw_print("Failed to get lock, retrying in 2 minutes...\n");
-            sleep(120);
-        }
+		if (flock(lock_file_file, LOCK_EX | LOCK_NB) == 0) {
+			print::raw_print("Got lock!\n");
+			break;
+		}
+		print::raw_print("Failed to get lock. Trying in 2 minutes...\n");
+		sleep(120);
     }
     int count = 0;
     {
