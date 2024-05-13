@@ -15,9 +15,52 @@
 #include <cerrno>
 #include <filesystem>
 #include <array>
-#include <chrono>
 #include <sys/stat.h>
 #include "src/print.h"
+
+constexpr unsigned int PERMS = 0755;
+
+struct CTX
+{
+	const size_t& size_total;
+	const bool& safe_mode;
+	const bool& fix_perms;
+	const bool& verbose;
+	const std::string& repo_path;
+	const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages;
+	int& good_files;
+	int& bad_files;
+	int& zombie_files;
+	size_t& size_done;
+	bool& prev_print;
+	const std::string& server;
+	const std::chrono::time_point<std::chrono::system_clock>& start_time;
+	std::vector<std::string_view>& zombie_files_list;
+	EVP_MD_CTX *md_ctx;
+	char* buffer;
+	unsigned char* hash;
+	unsigned int* hash_len;
+	std::stringstream* actual_hash_stream;
+};
+
+void mkdir_p(const std::filesystem::path& path) {
+	if (!std::filesystem::exists(path.parent_path())) {
+		mkdir_p(path.parent_path());
+	}
+	if (!std::filesystem::exists(path)) {
+		print::raw_print("Creating directory: {}\n", path.string());
+		std::filesystem::create_directory(path, path.parent_path());
+	}
+}
+
+// Assumes file already exists
+void fix_perms(const std::filesystem::path& path, const CTX& ctx) {
+	if (!ctx.fix_perms)
+		return;
+	if (chmod(path.c_str(), PERMS) == -1) {
+		throw std::runtime_error("Failed to fix permissions for file: " + path.string());
+	}
+}
 
 constexpr size_t BUFFER_SIZE = 4194304; // 4 MB
 constexpr unsigned char MAX_ERROR_DEPTH = 5;
@@ -43,6 +86,7 @@ Options:
     --bad-lock: Use the bad lock file location (current working directory)
     --delete-zombies: Delete zombie files
     --store-zombies: Store zombie files in a file
+	--fix-perms: Fix permissions of files (0755)
     --zombie-only: Only check for zombie files
     --algo2: Use the second algorithm for checking files (might be faster but ignores zombie files)
     --debug: Enable debug mode (implies --safe and --bad-lock)
@@ -90,27 +134,7 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     stream.write(ptr, size * nmemb);
     return size * nmemb;
 }
-struct CTX
-{
-        const size_t& size_total;
-        const bool& safe_mode;
-        const bool& verbose;
-        const std::string& repo_path;
-        const std::unordered_map<std::string, std::pair<std::string, size_t>>& packages;
-        int& good_files;
-        int& bad_files;
-        int& zombie_files;
-        size_t& size_done;
-        bool& prev_print;
-        const std::string& server;
-        const std::chrono::time_point<std::chrono::system_clock>& start_time;
-        std::vector<std::string_view>& zombie_files_list;
-        EVP_MD_CTX *md_ctx;
-        char* buffer;
-        unsigned char* hash;
-        unsigned int* hash_len;
-        std::stringstream* actual_hash_stream;
-};
+
 
 inline void print_status(const CTX& ctx)
 {
@@ -299,6 +323,7 @@ inline void check_file_2(const auto& package, const std::string& directoryPath, 
             ctx.prev_print = false;
             // Download good version of the file
             if (!ctx.safe_mode) {
+				mkdir_p(std::filesystem::path(file_path).parent_path());
                 download_file(file_path, ctx.server + "/ubuntu/" + package.first);
                 // Verify that the downloaded file is correct
                 check_file_2(package, directoryPath, ctx, depth + 1);
@@ -308,7 +333,7 @@ inline void check_file_2(const auto& package, const std::string& directoryPath, 
                 ctx.size_done += package.second.second;
                 print_status(ctx);
             }
-        } else if (file_info.second != package.second.second){
+        } else if (file_info.second != package.second.second) {
             ctx.prev_print = false;
             print::raw_print("\x1b[A[BAD FILE] {} - actual size: {}, expected size: {}\n", package.first, file_info.second, package.second.second);
             if (!ctx.safe_mode) {
@@ -351,19 +376,18 @@ inline void check_file_2(const auto& package, const std::string& directoryPath, 
                     // Verify that the downloaded file is correct
                     check_file_2(package, directoryPath, ctx,depth+1);
                 }
-            } else if (ctx.verbose) {
-                print::raw_print("\x1b[A[GOOD FILE] {} - hash: {}\n", package.first, actual_hash);
-                ctx.prev_print = false;
-                if (depth == 0){
-                    ctx.good_files++;
-                    ctx.size_done += package.second.second;
-                    print_status(ctx);
-                }
-            } else if (depth == 0) {
-                ctx.good_files++;
-                ctx.size_done += package.second.second;
-                print_status(ctx);
-            }
+            } else {
+				fix_perms(file_path, ctx);
+				if (ctx.verbose) {
+					print::raw_print("\x1b[A[GOOD FILE] {} - hash: {}\n", package.first, actual_hash);
+					ctx.prev_print = false;
+				}
+				if (depth == 0){
+					ctx.good_files++;
+					ctx.size_done += package.second.second;
+					print_status(ctx);
+				}
+			}
         }
     }
     catch (std::runtime_error& error)
@@ -465,6 +489,7 @@ int main(int argc, char* argv[]) {
     bool store_zombies = false;
     bool algo2 = false;
     bool debug_mode = false;
+	bool fix_perms = false;
 
     std::ifstream mirror_config_file(mirror_file);
     if (!mirror_config_file) {
@@ -490,9 +515,11 @@ int main(int argc, char* argv[]) {
             debug_mode = true;
             safe_mode = true;
             bad_lock = true;
-        } else if (std::strcmp(argv[i], "--help") == 0){
-            print_help();
-            return 0;
+        } else if (std::strcmp(argv[i], "--help") == 0) {
+			print_help();
+			return 0;
+		}else if (std::strcmp(argv[i], "--fix-perms")==0){
+			fix_perms = true;
         } else {
             print::raw_print("Unknown option: {}\n", argv[i]);
             print_help();
@@ -504,12 +531,17 @@ int main(int argc, char* argv[]) {
         print::raw_print("Options --zombie-only, --delete-zombies, and --store-zombies are incompatible with --algo2\n");
         return 1;
     }
+	if(fix_perms && safe_mode){
+		print::raw_print("Options --fix-perms and --safe are incompatible\n");
+		return 1;
+	}
 
     print::raw_print("Options used:\n");
     print::raw_print("Using a{} lock\n", (bad_lock ? " bad" : ""));
     print::raw_print("Being {}\n", (verbose ? "verbose" : "quiet"));
     print::raw_print("Safe mode: {}\n", (safe_mode ? "ON" : "OFF"));
     print::raw_print("Delete zombies: {}\n", (delete_zombies ? "ON" : "OFF"));
+	print::raw_print("Fix permissions: {}\n", (fix_perms ? "ON" : "OFF"));
     print::raw_print("Store zombies: {}\n", (store_zombies ? "ON" : "OFF"));
     print::raw_print("Zombie only: {}\n", (zombie_only ? "ON" : "OFF"));
     print::raw_print("Using algorithm {}\n", (algo2 ? "2" : "1"));
@@ -654,7 +686,7 @@ int main(int argc, char* argv[]) {
 
     auto start_time = std::chrono::high_resolution_clock::now();
     std::vector<std::string_view> zombie_files_list;
-    CTX ctx = {total_size, safe_mode, verbose, repo_path, packages, good_files, bad_files, zombie_files,
+    CTX ctx = {total_size, safe_mode, fix_perms, verbose, repo_path, packages, good_files, bad_files, zombie_files,
                size_done, prev_print, server, start_time, zombie_files_list, EVP_MD_CTX_new(), new char[BUFFER_SIZE],
                new unsigned char[EVP_MAX_MD_SIZE], new unsigned int, new std::stringstream};
     (*ctx.actual_hash_stream) << std::hex << std::setfill('0');

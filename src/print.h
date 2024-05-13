@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iostream>
+#include <chrono>
 #include <mutex>
 
 #if defined __has_include && __has_include(<print>)

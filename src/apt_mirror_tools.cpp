@@ -12,37 +12,23 @@
 inline constexpr char hex_char_to_int(const char& c) {
     switch (c) {
         case '0':
-            return 0x0;
-        case '1':
-            return 0x1;
-        case '2':
-            return 0x2;
-        case '3':
-            return 0x3;
-        case '4':
-            return 0x4;
-        case '5':
-            return 0x5;
-        case '6':
-            return 0x6;
-        case '7':
-            return 0x7;
-        case '8':
-            return 0x8;
-        case '9':
-            return 0x9;
-        case 'a':
-            return 0xa;
-        case 'b':
-            return 0xb;
-        case 'c':
-            return 0xc;
-        case 'd':
-            return 0xd;
-        case 'e':
-            return 0xe;
-        case 'f':
-            return 0xf;
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9':
+			return c - '0';
+		case 'a':
+		case 'b':
+		case 'c':
+		case 'd':
+		case 'e':
+		case 'f':
+			return c - 'a' + 10;
         default:
             throw std::runtime_error("Invalid hex character");
     }

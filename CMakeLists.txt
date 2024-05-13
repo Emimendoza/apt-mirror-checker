@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(apt-mirror-checker CXX)
+project(apt-mirror-tools CXX)
 
 # Check if the compiler supports C++23
 include(CheckCXXCompilerFlag)
@@ -73,14 +73,20 @@ else()
 endif()
 
 # Add the executable and link against libcurl and OpenSSL
-add_executable(apt-mirror-checker # main.cpp
+add_executable(apt-mirror-tools # main.cpp
         src/apt_mirror_tools.cpp
         src/apt_mirror_tools.h
         src/print.h
         src/main.cpp
 )
+# Old implementation
+add_executable(apt-mirror-checker
+        ./main.cpp
+)
 if(NOT HAS_CXX_FORMAT)
+    target_link_libraries(apt-mirror-tools ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt)
     target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt)
 else ()
+    target_link_libraries(apt-mirror-tools ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
     target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
 endif()
