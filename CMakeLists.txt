@@ -64,6 +64,9 @@ find_package(CURL REQUIRED)
 # Find OpenSSL package
 find_package(OpenSSL REQUIRED)
 
+# Find lzma
+find_package(LibLZMA REQUIRED)
+
 # Optimize release
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -84,9 +87,9 @@ add_executable(apt-mirror-checker
         ./main.cpp
 )
 if(NOT HAS_CXX_FORMAT)
-    target_link_libraries(apt-mirror-tools ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt)
-    target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} fmt)
+    target_link_libraries(apt-mirror-tools ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} ${LIBLZMA_LIBRARIES} fmt)
+    target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} ${LIBLZMA_LIBRARIES} fmt)
 else ()
-    target_link_libraries(apt-mirror-tools ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
-    target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES})
+    target_link_libraries(apt-mirror-tools ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} ${LIBLZMA_LIBRARIES} )
+    target_link_libraries(apt-mirror-checker ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} ${LIBLZMA_LIBRARIES})
 endif()

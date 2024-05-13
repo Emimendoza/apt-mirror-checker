@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <filesystem>
 #include <array>
+#include <lzma.h>
 #include <sys/stat.h>
 #include "src/print.h"
 
@@ -106,7 +107,64 @@ std::string format_file_size(double file_size_bytes) {
     return formatted.str();
 }
 
+std::string readXZFile(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Failed to open file for reading: " + filename);
+    }
+
+    // Set up the xz stream
+    lzma_stream strm = LZMA_STREAM_INIT;
+    lzma_ret ret = lzma_stream_decoder(&strm, UINT64_MAX, 0);
+    if (ret != LZMA_OK) {
+        throw std::runtime_error("Failed to initialize xz decoder");
+    }
+
+    // Create an ostringstream to store the uncompressed data
+    std::ostringstream oss;
+
+    // Read and decompress the file
+    constexpr size_t bufsize = 4096;
+    char out_buffer[bufsize];
+    char in_buffer[bufsize];
+    strm.next_out = reinterpret_cast<uint8_t*>(out_buffer);
+    strm.avail_out = bufsize;
+
+    while (true) {
+        auto action = LZMA_RUN;
+        if (strm.avail_in == 0 && !file.eof()) {
+            file.read(in_buffer, bufsize);
+            strm.avail_in = file.gcount();
+            strm.next_in = reinterpret_cast<uint8_t*>(in_buffer);
+        }
+        if (file.eof()){
+            action = LZMA_FINISH;
+        }
+
+        ret = lzma_code(&strm, action);
+        if (ret != LZMA_STREAM_END && ret != LZMA_OK) {
+            lzma_end(&strm);
+            throw std::runtime_error("Error decompressing data: " + std::to_string(ret));
+        }
+        if(strm.avail_out == 0 || ret == LZMA_STREAM_END) {
+            oss.write(out_buffer, bufsize - strm.avail_out);
+            strm.next_out = reinterpret_cast<uint8_t *>(out_buffer);
+            strm.avail_out = bufsize;
+        }
+        if (ret == LZMA_STREAM_END)
+            break;
+    }
+
+    // Clean up
+    lzma_end(&strm);
+
+    return oss.str();
+}
+
 std::string get_file_contents(const std::string& file_path) {
+    if (file_path.ends_with(".xz")){
+        return readXZFile(file_path);
+    }
     std::ifstream file(file_path);
     if (!file) {
         throw std::runtime_error("Failed to read file: " + file_path);
@@ -627,28 +685,31 @@ int main(int argc, char* argv[]) {
                 for (const auto &arch: archs) {
                     curr_file = repo_path + std::string("/dists/").append(distro).append("/").append(distro2).append(
                             "/binary-").append(arch).append("/Packages");
-                    if (access(curr_file.c_str(), F_OK) != -1) {
-                        mirror_content = get_file_contents(curr_file);
-                        start = 0;
-                        while (get_next(mirror_content, start, entry, "\n\n")) {
-                            count++;
-                            entry_stream = std::istringstream (entry);
-                            while (std::getline(entry_stream, line)) {
-                                line_stream = std::istringstream (line);
-                                line_stream >> token;
-                                if (token == "Filename:") {
-                                    line_stream >> e_name;
-                                } else if (token == "Size:") {
-                                    line_stream >> e_size;
-                                } else if (token == "SHA256:") {
-                                    line_stream >> e_hash;
-                                    break;
-                                }
+                    if (!exists(std::filesystem::path(curr_file))){
+                        if(exists(std::filesystem::path(curr_file + ".xz")))
+                            curr_file.append(".xz");
+                        // TODO: ADD gz support
+                    }
+                    mirror_content = get_file_contents(curr_file);
+                    start = 0;
+                    while (get_next(mirror_content, start, entry, "\n\n")) {
+                        count++;
+                        entry_stream = std::istringstream (entry);
+                        while (std::getline(entry_stream, line)) {
+                            line_stream = std::istringstream (line);
+                            line_stream >> token;
+                            if (token == "Filename:") {
+                                line_stream >> e_name;
+                            } else if (token == "Size:") {
+                                line_stream >> e_size;
+                            } else if (token == "SHA256:") {
+                                line_stream >> e_hash;
+                                break;
                             }
-                            if (!e_name.empty() && !e_hash.empty() && !e_size.empty() &&
-                                packages.find(e_name) == packages.end()) {
-                                packages[e_name] = std::make_pair(e_hash, std::stoul(e_size));
-                            }
+                        }
+                        if (!e_name.empty() && !e_hash.empty() && !e_size.empty() &&
+                            packages.find(e_name) == packages.end()) {
+                            packages[e_name] = std::make_pair(e_hash, std::stoul(e_size));
                         }
                     }
                 }
