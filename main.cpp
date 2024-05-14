@@ -649,17 +649,19 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    int lock_file_file = open(lock_file.c_str(), O_CREAT|O_RDONLY,0666);
-    if (lock_file_file == -1){
-        std::cerr << "Error opening lock file: " << lock_file << '\n';
-        std::cerr << strerror(errno) << '\n';
-        return 1;
-    }
+    int lock_file_file;
     while (true) {
+		lock_file_file = open(lock_file.c_str(), O_CREAT|O_RDONLY,0666);
+		if (lock_file_file == -1){
+			std::cerr << "Error opening lock file: " << lock_file << '\n';
+			std::cerr << strerror(errno) << '\n';
+			return 1;
+		}
 		if (flock(lock_file_file, LOCK_EX | LOCK_NB) == 0) {
 			print::raw_print("Got lock!\n");
 			break;
 		}
+		close(lock_file_file); // Apt-mirror deletes the lock file, so we need to get a new fd every time
 		print::raw_print("Failed to get lock. Trying in 2 minutes...\n");
 		sleep(120);
     }
